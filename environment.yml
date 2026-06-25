@@ -1,0 +1,80 @@
+# =============================================================================
+# VLMProjects — unified conda environment (Apple Silicon MacBook / MPS)
+# =============================================================================
+# One environment that runs ALL projects in this repo, each a pure-PyTorch port
+# that runs on Apple Silicon via the `mps` backend (no CUDA, no mmcv/mmdet3d):
+#
+#   bevformer_vldrive    bevfusion_vldrive    Occupancy/FlashOcc
+#   simple_bev_vldrive   sparse4d_vldrive     motionForecasting/QCNet
+#   simulator (KBM)
+#
+# Versions are pinned to the set verified working on an M3 Max (macOS, py3.12).
+#
+# ---------------------------------------------------------------------------
+# SETUP
+#   conda env create -f environment.yml      # or: mamba env create -f ...
+#   conda activate vldrive
+#   python check_mps.py                       # expect "MPS available: True"
+#
+# (Equivalently just run: ./setup_env.sh)
+#
+# ---------------------------------------------------------------------------
+# KNOWN MACOS GOTCHA — duplicate OpenMP runtime
+#   You may hit: "OMP: Error #15: ... libomp.dylib already initialized."
+#   PyTorch and conda each ship a libomp.dylib. Two fixes:
+#     (a) quick:  export KMP_DUPLICATE_LIB_OK=TRUE   # before running scripts
+#     (b) clean:  point conda's copy at PyTorch's (run once, after install):
+#         cd "$CONDA_PREFIX/lib"
+#         mv libomp.dylib libomp.dylib.bak
+#         ln -s python3.12/site-packages/torch/lib/libomp.dylib libomp.dylib
+#
+# ---------------------------------------------------------------------------
+# NOT INCLUDED (cannot run on macOS)
+#   The CARLA closed-loop interface in sparse4d_vldrive/.../bench2drive imports
+#   `carla` and `leaderboard`. CARLA is Linux/Windows-only and is NOT installable
+#   on a Mac — those packages are intentionally omitted. Every other code path
+#   (multi-view -> track -> motion -> plan -> control, plus the local KBM
+#   simulator) runs fully on MPS without them.
+# =============================================================================
+
+name: vldrive
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      # --- core deep learning (Apple Silicon wheels come from pip) ---
+      - torch==2.12.0
+      - torchvision==0.27.0
+
+      # --- numerics / imaging (all projects) ---
+      - numpy==2.4.6
+      - scipy==1.17.1
+      - matplotlib==3.10.9
+      - einops==0.8.2
+      - opencv-python-headless==4.11.0.86
+      - pillow==12.2.0
+      - imageio==2.37.3
+      - scikit-image==0.26.0
+
+      # --- nuScenes data + geometry (bevformer/bevfusion/simple_bev/sparse4d/flashocc) ---
+      - nuscenes-devkit==1.2.0
+      - pyquaternion==0.9.9
+
+      # --- Argoverse 2 motion-forecasting parsing (motionForecasting/QCNet) ---
+      - av2==0.3.6
+      - pandas==3.0.3
+      - pyarrow==24.0.0
+
+      # --- model utilities / training / logging (shared) ---
+      - efficientnet_pytorch==0.7.1
+      - timm==1.0.27
+      - tensorboardX==2.6.5
+      - tqdm==4.67.3
+      - pyyaml==6.0.3
+      - fire==0.7.1
+      - setuptools
+
+      # --- optional: only for the Lyft eval/train scripts in simple_bev ---
+      # - lyft-dataset-sdk==0.0.8

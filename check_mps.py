@@ -1,3 +1,4 @@
+"""Quick sanity check that PyTorch sees the Apple-Silicon MPS backend."""
 import torch
 
 
