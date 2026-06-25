@@ -1,0 +1,16 @@
+{
+  "mAP": 1.3776743499442407e-05,
+  "NDS": 0.0037932437229571377,
+  "per_class_AP": {
+    "car": 0.00013776743499442406,
+    "truck": 0.0,
+    "construction_vehicle": 0.0,
+    "bus": 0.0,
+    "trailer": 0.0,
+    "barrier": 0.0,
+    "motorcycle": 0.0,
+    "bicycle": 0.0,
+    "pedestrian": 0.0,
+    "traffic_cone": 0.0
+  }
+}

@@ -1,0 +1,183 @@
+[init] Device: mps
+[init] Dataset: 404 keyframes across 10 scenes
+[ckpt] sparse4d_vl/model/checkpoints/sparse4dv3_r50.pth
+       mapped=1142  missing=14  unexpected=0
+       (missing keys expected for unshared/optional modules)
+[init] Checkpoint loaded: sparse4d_vl/model/checkpoints/sparse4dv3_r50.pth
+[init] Params — total: 53.1M  trainable: 52.9M  (stem+layer1 + all BN frozen)
+[init] DN groups=5  depth=on  quality cns/yns weights=1.0/1.0
+
+[train] 6 epochs (2424 steps)
+
+============================================================
+Epoch 00 / 5
+============================================================
+  epoch 00 | step 00020 | loss 4.3626 (det 2.4220  dn 1.3691  depth 11.4301) | lr 1.98e-06 | 0.36 fr/s
+  epoch 00 | step 00040 | loss 3.8663 (det 2.0342  dn 1.3136  depth 10.3708) | lr 3.96e-06 | 0.36 fr/s
+  epoch 00 | step 00060 | loss 4.0988 (det 2.1225  dn 1.3875  depth 11.7778) | lr 5.94e-06 | 0.36 fr/s
+  epoch 00 | step 00080 | loss 5.5316 (det 3.3302  dn 1.6200  depth 11.6276) | lr 7.92e-06 | 0.36 fr/s
+  epoch 00 | step 00100 | loss 6.1018 (det 3.7644  dn 1.7567  depth 11.6144) | lr 9.90e-06 | 0.38 fr/s
+  epoch 00 | step 00120 | loss 5.5860 (det 3.5528  dn 1.4513  depth 11.6374) | lr 1.19e-05 | 0.39 fr/s
+  epoch 00 | step 00140 | loss 3.8409 (det 1.6148  dn 1.6547  depth 11.4287) | lr 1.39e-05 | 0.39 fr/s
+  epoch 00 | step 00160 | loss 3.6388 (det 1.4479  dn 1.4927  depth 13.9663) | lr 1.58e-05 | 0.39 fr/s
+  epoch 00 | step 00180 | loss 3.2374 (det 1.3998  dn 1.3491  depth 9.7695) | lr 1.78e-05 | 0.40 fr/s
+  epoch 00 | step 00200 | loss 3.1978 (det 1.5608  dn 1.2407  depth 7.9257) | lr 1.98e-05 | 0.41 fr/s
+  epoch 00 | step 00220 | loss 4.8048 (det 2.5577  dn 1.6038  depth 12.8653) | lr 2.00e-05 | 0.40 fr/s
+  epoch 00 | step 00240 | loss 5.0311 (det 2.9008  dn 1.5970  depth 10.6657) | lr 2.00e-05 | 0.41 fr/s
+  epoch 00 | step 00260 | loss 3.8194 (det 1.7608  dn 1.3704  depth 13.7644) | lr 2.00e-05 | 0.41 fr/s
+  epoch 00 | step 00280 | loss 3.2222 (det 1.2345  dn 1.2805  depth 14.1437) | lr 1.99e-05 | 0.41 fr/s
+  epoch 00 | step 00300 | loss 4.3878 (det 2.2628  dn 1.4843  depth 12.8149) | lr 1.99e-05 | 0.41 fr/s
+  epoch 00 | step 00320 | loss 5.2878 (det 3.2119  dn 1.3695  depth 14.1276) | lr 1.99e-05 | 0.41 fr/s
+  epoch 00 | step 00340 | loss 3.3710 (det 1.4560  dn 1.2600  depth 13.1004) | lr 1.98e-05 | 0.41 fr/s
+  epoch 00 | step 00360 | loss 3.1239 (det 1.4152  dn 1.0490  depth 13.1933) | lr 1.98e-05 | 0.41 fr/s
+  epoch 00 | step 00380 | loss 3.4282 (det 1.5315  dn 1.1805  depth 14.3235) | lr 1.97e-05 | 0.42 fr/s
+  epoch 00 | step 00400 | loss 3.4979 (det 1.5533  dn 1.2238  depth 14.4144) | lr 1.96e-05 | 0.42 fr/s
+
+[epoch 00] mean_loss = 4.0975
+
+[ckpt] Saved → checkpoints/train_v3_full/epoch_00.pt
+============================================================
+Epoch 01 / 5
+============================================================
+  epoch 01 | step 00420 | loss 4.3335 (det 2.3864  dn 1.3102  depth 12.7379) | lr 1.95e-05 | 0.36 fr/s
+  epoch 01 | step 00440 | loss 3.7121 (det 1.7956  dn 1.3605  depth 11.1202) | lr 1.94e-05 | 0.36 fr/s
+  epoch 01 | step 00460 | loss 3.7791 (det 1.8914  dn 1.2997  depth 11.7596) | lr 1.93e-05 | 0.39 fr/s
+  epoch 01 | step 00480 | loss 3.4571 (det 1.5517  dn 1.3367  depth 11.3748) | lr 1.92e-05 | 0.40 fr/s
+  epoch 01 | step 00500 | loss 5.5829 (det 3.5679  dn 1.4227  depth 11.8458) | lr 1.91e-05 | 0.41 fr/s
+  epoch 01 | step 00520 | loss 5.2073 (det 3.4635  dn 1.1552  depth 11.7705) | lr 1.90e-05 | 0.42 fr/s
+  epoch 01 | step 00540 | loss 3.2433 (det 1.4019  dn 1.2828  depth 11.1728) | lr 1.89e-05 | 0.42 fr/s
+  epoch 01 | step 00560 | loss 3.7564 (det 1.7942  dn 1.3823  depth 11.5973) | lr 1.87e-05 | 0.43 fr/s
+  epoch 01 | step 00580 | loss 2.7929 (det 1.1746  dn 1.1139  depth 10.0886) | lr 1.86e-05 | 0.44 fr/s
+  epoch 01 | step 00600 | loss 3.4838 (det 1.8130  dn 1.2703  depth 8.0119) | lr 1.85e-05 | 0.45 fr/s
+  epoch 01 | step 00620 | loss 4.4180 (det 2.4185  dn 1.2993  depth 14.0041) | lr 1.83e-05 | 0.46 fr/s
+  epoch 01 | step 00640 | loss 3.8046 (det 2.1055  dn 1.1790  depth 10.4030) | lr 1.81e-05 | 0.46 fr/s
+  epoch 01 | step 00660 | loss 3.4072 (det 1.4575  dn 1.2885  depth 13.2238) | lr 1.80e-05 | 0.46 fr/s
+  epoch 01 | step 00680 | loss 3.1469 (det 1.2325  dn 1.2357  depth 13.5724) | lr 1.78e-05 | 0.46 fr/s
+  epoch 01 | step 00700 | loss 4.1720 (det 2.2403  dn 1.2906  depth 12.8227) | lr 1.76e-05 | 0.46 fr/s
+  epoch 01 | step 00720 | loss 4.5670 (det 2.7090  dn 1.1374  depth 14.4127) | lr 1.74e-05 | 0.46 fr/s
+  epoch 01 | step 00740 | loss 3.2877 (det 1.3774  dn 1.2255  depth 13.6973) | lr 1.72e-05 | 0.46 fr/s
+  epoch 01 | step 00760 | loss 3.2013 (det 1.2567  dn 1.2133  depth 14.6274) | lr 1.70e-05 | 0.46 fr/s
+  epoch 01 | step 00780 | loss 3.4400 (det 1.4599  dn 1.2672  depth 14.2588) | lr 1.68e-05 | 0.46 fr/s
+  epoch 01 | step 00800 | loss 3.2196 (det 1.4756  dn 1.0202  depth 14.4766) | lr 1.66e-05 | 0.47 fr/s
+
+[epoch 01] mean_loss = 3.7918
+
+[ckpt] Saved → checkpoints/train_v3_full/epoch_01.pt
+============================================================
+Epoch 02 / 5
+============================================================
+  epoch 02 | step 00820 | loss 4.1777 (det 2.3571  dn 1.2060  depth 12.2921) | lr 1.64e-05 | 0.38 fr/s
+  epoch 02 | step 00840 | loss 3.7092 (det 1.7800  dn 1.3597  depth 11.3898) | lr 1.62e-05 | 0.36 fr/s
+  epoch 02 | step 00860 | loss 3.3887 (det 1.6575  dn 1.1650  depth 11.3256) | lr 1.60e-05 | 0.39 fr/s
+  epoch 02 | step 00880 | loss 3.1973 (det 1.4402  dn 1.1246  depth 12.6496) | lr 1.57e-05 | 0.41 fr/s
+  epoch 02 | step 00900 | loss 5.0751 (det 3.2846  dn 1.2126  depth 11.5584) | lr 1.55e-05 | 0.42 fr/s
+  epoch 02 | step 00920 | loss 4.3800 (det 2.6245  dn 1.1672  depth 11.7651) | lr 1.53e-05 | 0.42 fr/s
+  epoch 02 | step 00940 | loss 3.4665 (det 1.5719  dn 1.3294  depth 11.3040) | lr 1.50e-05 | 0.43 fr/s
+  epoch 02 | step 00960 | loss 3.7899 (det 1.8926  dn 1.3687  depth 10.5733) | lr 1.48e-05 | 0.43 fr/s
+  epoch 02 | step 00980 | loss 3.0203 (det 1.3220  dn 1.2057  depth 9.8534) | lr 1.45e-05 | 0.44 fr/s
+  epoch 02 | step 01000 | loss 3.0918 (det 1.5612  dn 1.1365  depth 7.8826) | lr 1.43e-05 | 0.45 fr/s
+  epoch 02 | step 01020 | loss 3.8704 (det 2.0689  dn 1.1831  depth 12.3681) | lr 1.40e-05 | 0.46 fr/s
+  epoch 02 | step 01040 | loss 4.3080 (det 2.4955  dn 1.2089  depth 12.0699) | lr 1.38e-05 | 0.46 fr/s
+  epoch 02 | step 01060 | loss 3.3825 (det 1.4600  dn 1.2332  depth 13.7839) | lr 1.35e-05 | 0.47 fr/s
+  epoch 02 | step 01080 | loss 3.2224 (det 1.4247  dn 1.0774  depth 14.4067) | lr 1.32e-05 | 0.46 fr/s
+  epoch 02 | step 01100 | loss 3.9998 (det 2.3344  dn 1.0580  depth 12.1485) | lr 1.30e-05 | 0.47 fr/s
+  epoch 02 | step 01120 | loss 3.7793 (det 2.0546  dn 1.1006  depth 12.4832) | lr 1.27e-05 | 0.47 fr/s
+  epoch 02 | step 01140 | loss 3.3708 (det 1.5334  dn 1.1631  depth 13.4872) | lr 1.24e-05 | 0.47 fr/s
+  epoch 02 | step 01160 | loss 3.2559 (det 1.5228  dn 1.0828  depth 13.0056) | lr 1.21e-05 | 0.47 fr/s
+  epoch 02 | step 01180 | loss 3.2240 (det 1.3540  dn 1.1678  depth 14.0447) | lr 1.19e-05 | 0.47 fr/s
+  epoch 02 | step 01200 | loss 3.2247 (det 1.5409  dn 0.9629  depth 14.4183) | lr 1.16e-05 | 0.47 fr/s
+
+[epoch 02] mean_loss = 3.6416
+
+[ckpt] Saved → checkpoints/train_v3_full/epoch_02.pt
+============================================================
+Epoch 03 / 5
+============================================================
+  epoch 03 | step 01220 | loss 4.0184 (det 2.2400  dn 1.1777  depth 12.0133) | lr 1.13e-05 | 0.39 fr/s
+  epoch 03 | step 01240 | loss 3.6444 (det 1.7729  dn 1.3092  depth 11.2458) | lr 1.10e-05 | 0.36 fr/s
+  epoch 03 | step 01260 | loss 3.2017 (det 1.5198  dn 1.0785  depth 12.0673) | lr 1.07e-05 | 0.39 fr/s
+  epoch 03 | step 01280 | loss 3.3603 (det 1.5693  dn 1.1625  depth 12.5694) | lr 1.05e-05 | 0.40 fr/s
+  epoch 03 | step 01300 | loss 4.4024 (det 2.6552  dn 1.1628  depth 11.6881) | lr 1.02e-05 | 0.42 fr/s
+  epoch 03 | step 01320 | loss 4.1419 (det 2.5327  dn 1.0228  depth 11.7289) | lr 9.90e-06 | 0.43 fr/s
+  epoch 03 | step 01340 | loss 3.6339 (det 1.6571  dn 1.3931  depth 11.6734) | lr 9.62e-06 | 0.43 fr/s
+  epoch 03 | step 01360 | loss 3.4116 (det 1.5363  dn 1.2802  depth 11.9033) | lr 9.34e-06 | 0.43 fr/s
+  epoch 03 | step 01380 | loss 2.9186 (det 1.3334  dn 1.0900  depth 9.9025) | lr 9.05e-06 | 0.44 fr/s
+  epoch 03 | step 01400 | loss 2.6189 (det 1.2201  dn 1.0159  depth 7.6570) | lr 8.77e-06 | 0.45 fr/s
+  epoch 03 | step 01420 | loss 3.5813 (det 1.8598  dn 1.1001  depth 12.4275) | lr 8.49e-06 | 0.46 fr/s
+  epoch 03 | step 01440 | loss 3.2665 (det 1.6621  dn 0.9962  depth 12.1615) | lr 8.21e-06 | 0.46 fr/s
+  epoch 03 | step 01460 | loss 3.5365 (det 1.6088  dn 1.2363  depth 13.8276) | lr 7.94e-06 | 0.47 fr/s
+  epoch 03 | step 01480 | loss 3.3742 (det 1.5082  dn 1.1315  depth 14.6902) | lr 7.66e-06 | 0.47 fr/s
+  epoch 03 | step 01500 | loss 3.2417 (det 1.6807  dn 0.9023  depth 13.1736) | lr 7.39e-06 | 0.47 fr/s
+  epoch 03 | step 01520 | loss 3.7231 (det 2.1593  dn 1.0247  depth 10.7823) | lr 7.11e-06 | 0.47 fr/s
+  epoch 03 | step 01540 | loss 3.4005 (det 1.5918  dn 1.1616  depth 12.9420) | lr 6.85e-06 | 0.47 fr/s
+  epoch 03 | step 01560 | loss 3.2712 (det 1.5838  dn 1.0934  depth 11.8786) | lr 6.58e-06 | 0.47 fr/s
+  epoch 03 | step 01580 | loss 3.2200 (det 1.3309  dn 1.1819  depth 14.1439) | lr 6.31e-06 | 0.47 fr/s
+  epoch 03 | step 01600 | loss 3.2915 (det 1.4710  dn 1.0938  depth 14.5339) | lr 6.05e-06 | 0.47 fr/s
+
+[epoch 03] mean_loss = 3.5504
+
+[ckpt] Saved → checkpoints/train_v3_full/epoch_03.pt
+============================================================
+Epoch 04 / 5
+============================================================
+  epoch 04 | step 01620 | loss 4.0971 (det 2.4117  dn 1.1383  depth 10.9426) | lr 5.79e-06 | 0.37 fr/s
+  epoch 04 | step 01640 | loss 3.8111 (det 1.9709  dn 1.2917  depth 10.9715) | lr 5.54e-06 | 0.35 fr/s
+  epoch 04 | step 01660 | loss 3.5447 (det 1.7459  dn 1.2473  depth 11.0313) | lr 5.29e-06 | 0.38 fr/s
+  epoch 04 | step 01680 | loss 3.4692 (det 1.7274  dn 1.1247  depth 12.3427) | lr 5.04e-06 | 0.40 fr/s
+  epoch 04 | step 01700 | loss 4.3595 (det 2.5993  dn 1.1680  depth 11.8417) | lr 4.80e-06 | 0.42 fr/s
+  epoch 04 | step 01720 | loss 4.2912 (det 2.5683  dn 1.1357  depth 11.7447) | lr 4.56e-06 | 0.43 fr/s
+  epoch 04 | step 01740 | loss 3.4170 (det 1.6294  dn 1.2396  depth 10.9597) | lr 4.32e-06 | 0.43 fr/s
+  epoch 04 | step 01760 | loss 3.5071 (det 1.5943  dn 1.3305  depth 11.6450) | lr 4.09e-06 | 0.43 fr/s
+  epoch 04 | step 01780 | loss 2.9774 (det 1.3081  dn 1.1332  depth 10.7208) | lr 3.87e-06 | 0.43 fr/s
+  epoch 04 | step 01800 | loss 3.1105 (det 1.5196  dn 1.1502  depth 8.8132) | lr 3.65e-06 | 0.45 fr/s
+  epoch 04 | step 01820 | loss 3.6602 (det 1.9826  dn 1.0645  depth 12.2618) | lr 3.43e-06 | 0.46 fr/s
+  epoch 04 | step 01840 | loss 3.7810 (det 2.1384  dn 1.0043  depth 12.7651) | lr 3.22e-06 | 0.46 fr/s
+  epoch 04 | step 01860 | loss 3.4731 (det 1.6109  dn 1.1992  depth 13.2585) | lr 3.01e-06 | 0.47 fr/s
+  epoch 04 | step 01880 | loss 3.3509 (det 1.5371  dn 1.0973  depth 14.3322) | lr 2.81e-06 | 0.47 fr/s
+  epoch 04 | step 01900 | loss 2.9844 (det 1.3447  dn 0.9481  depth 13.8308) | lr 2.62e-06 | 0.47 fr/s
+  epoch 04 | step 01920 | loss 4.2462 (det 2.4675  dn 1.2231  depth 11.1121) | lr 2.43e-06 | 0.47 fr/s
+  epoch 04 | step 01940 | loss 3.9173 (det 2.1694  dn 1.1219  depth 12.5208) | lr 2.25e-06 | 0.47 fr/s
+  epoch 04 | step 01960 | loss 3.1835 (det 1.4866  dn 1.1214  depth 11.5106) | lr 2.08e-06 | 0.47 fr/s
+  epoch 04 | step 01980 | loss 3.4083 (det 1.6573  dn 1.0800  depth 13.4204) | lr 1.91e-06 | 0.47 fr/s
+  epoch 04 | step 02000 | loss 3.2055 (det 1.5374  dn 0.9459  depth 14.4449) | lr 1.74e-06 | 0.47 fr/s
+  epoch 04 | step 02020 | loss 3.2940 (det 1.4792  dn 1.1043  depth 14.2105) | lr 1.59e-06 | 0.47 fr/s
+
+[epoch 04] mean_loss = 3.5358
+
+[ckpt] Saved → checkpoints/train_v3_full/epoch_04.pt
+============================================================
+Epoch 05 / 5
+============================================================
+  epoch 05 | step 02040 | loss 3.8328 (det 1.9848  dn 1.2581  depth 11.7998) | lr 1.44e-06 | 0.35 fr/s
+  epoch 05 | step 02060 | loss 3.8508 (det 2.0859  dn 1.2241  depth 10.8169) | lr 1.30e-06 | 0.37 fr/s
+  epoch 05 | step 02080 | loss 3.4409 (det 1.7470  dn 1.0906  depth 12.0659) | lr 1.16e-06 | 0.40 fr/s
+  epoch 05 | step 02100 | loss 4.6971 (det 2.8594  dn 1.2422  depth 11.9087) | lr 1.03e-06 | 0.41 fr/s
+  epoch 05 | step 02120 | loss 4.2330 (det 2.5511  dn 1.0926  depth 11.7852) | lr 9.10e-07 | 0.42 fr/s
+  epoch 05 | step 02140 | loss 4.2551 (det 2.5805  dn 1.0863  depth 11.7649) | lr 7.95e-07 | 0.43 fr/s
+  epoch 05 | step 02160 | loss 3.1539 (det 1.4315  dn 1.1475  depth 11.4959) | lr 6.89e-07 | 0.44 fr/s
+  epoch 05 | step 02180 | loss 3.3885 (det 1.4574  dn 1.2301  depth 14.0194) | lr 5.89e-07 | 0.44 fr/s
+  epoch 05 | step 02200 | loss 3.1581 (det 1.5214  dn 1.1463  depth 9.8081) | lr 4.97e-07 | 0.44 fr/s
+  epoch 05 | step 02220 | loss 2.7689 (det 1.3914  dn 0.9802  depth 7.9449) | lr 4.13e-07 | 0.45 fr/s
+  epoch 05 | step 02240 | loss 3.4466 (det 1.8171  dn 0.9859  depth 12.8702) | lr 3.36e-07 | 0.46 fr/s
+  epoch 05 | step 02260 | loss 4.0123 (det 2.4541  dn 1.0249  depth 10.6648) | lr 2.68e-07 | 0.47 fr/s
+  epoch 05 | step 02280 | loss 3.4380 (det 1.5825  dn 1.1672  depth 13.7663) | lr 2.07e-07 | 0.47 fr/s
+  epoch 05 | step 02300 | loss 3.2728 (det 1.4433  dn 1.1222  depth 14.1459) | lr 1.53e-07 | 0.47 fr/s
+  epoch 05 | step 02320 | loss 3.8781 (det 2.1577  dn 1.0796  depth 12.8147) | lr 1.08e-07 | 0.47 fr/s
+  epoch 05 | step 02340 | loss 4.0892 (det 2.3809  dn 1.0019  depth 14.1276) | lr 7.04e-08 | 0.47 fr/s
+  epoch 05 | step 02360 | loss 3.2618 (det 1.4634  dn 1.1435  depth 13.0982) | lr 4.09e-08 | 0.47 fr/s
+  epoch 05 | step 02380 | loss 3.0963 (det 1.4832  dn 0.9536  depth 13.1911) | lr 1.93e-08 | 0.47 fr/s
+  epoch 05 | step 02400 | loss 3.0927 (det 1.3868  dn 0.9899  depth 14.3194) | lr 5.76e-09 | 0.47 fr/s
+  epoch 05 | step 02420 | loss 3.3803 (det 1.5069  dn 1.1529  depth 14.4110) | lr 1.60e-10 | 0.48 fr/s
+
+[epoch 05] mean_loss = 3.5123
+
+[ckpt] Saved → checkpoints/train_v3_full/epoch_05.pt
+
+[done] Checkpoints in checkpoints/train_v3_full
+/Users/trish/miniforge3/envs/simple_bev_vldrive/lib/python3.12/site-packages/torch/autograd/graph.py:882: UserWarning: The operator 'aten::grid_sampler_2d_backward' is not currently supported on the MPS backend and will fall back to run on the CPU. This may have performance implications. (Triggered internally at /Users/runner/work/pytorch/pytorch/aten/src/ATen/mps/MPSFallback.mm:34.)
+  return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+/Users/trish/VLMProjects/sparse4d_vldrive/train_v3.py:152: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+Consider using tensor.detach() first. (Triggered internally at /Users/runner/work/pytorch/pytorch/torch/csrc/autograd/generated/python_variable_methods.cpp:839.)
+  total_dn += float(dn_loss); total_dep += float(dep_loss)
+
+

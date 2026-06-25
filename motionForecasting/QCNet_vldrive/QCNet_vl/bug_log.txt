@@ -1,0 +1,64 @@
+QCNet_vl — bug log (pure-PyTorch QCNet on MPS, validated against official QCNet_AV2 ckpt)
+=========================================================================================
+
+[checkpoint fidelity]
+The 949-tensor official state_dict (encoder.* / decoder.*) loads into the pure-PyTorch
+QCNet with 0 missing / 0 unexpected keys. This confirms every submodule name, shape, and
+nesting matches the official Lightning module. The AttentionLayer was rewritten without
+torch_geometric MessagePassing but keeps identical submodule names (to_q/to_k/to_v/to_k_r/
+to_v_r/to_s/to_g/to_out/ff_mlp/*norm*), so weights map 1:1.
+
+-----------------------------------------------------------------------------------------
+BUG #1 — radius_graph self-loop removal produced NaN, dropping ALL spatial edges
+-----------------------------------------------------------------------------------------
+Symptom: on 150 AV2 val scenarios, minADE=1.76 / minFDE=3.40 / MR=0.34 vs published
+0.72 / 1.25 / 0.16 (Brier 0.67 vs 0.62 was already close). Trajectories systematically
+wrong while mode probabilities were roughly right.
+
+Root cause: pyg_compat.radius_graph removed self-loops with
+    dist = dist + torch.eye(n) * float('inf')
+But 0 * inf = NaN, so every OFF-diagonal entry became NaN. Downstream
+`masked_fill(dist > r, inf)` leaves NaN (NaN > r is False), topk returns NaN, and
+`isfinite(vals)` filters them all out -> radius_graph returned 0 edges. This silently
+emptied pl2pl (map spatial), a2a (agent-agent), and a2m (mode-agent) graphs. The model
+still ran (temporal + pl2a + map connectivity edges survived), hence partial accuracy.
+
+Found by brute-force unit-testing every pyg_compat primitive against reference loops:
+segment_softmax / scatter_sum / radius / dense_to_sparse / coalesce all matched; only
+radius_graph returned "mine 0 vs bf 46".
+
+Fix: remove self-loops with `dist.fill_diagonal_(float('inf'))` (touches only the
+diagonal; no 0*inf). radius_graph then matches brute force exactly for single-batch and
+multi-batch inputs.
+
+RESULT after fix (150 AV2 val scenarios, official QCNet_AV2 ckpt, MPS):
+    minADE 0.7214 (pub 0.72) | minFDE 1.2181 (pub 1.25) | MR 0.107 (pub 0.16) |
+    brier-minFDE = minFDE + Brier = 1.2181 + 0.652 = 1.87 (pub 1.87)
+minADE/minFDE/brier-minFDE reproduce the published numbers; MR is the noisiest metric and
+sits a bit low on a 150-scene subset. Full 24,988-scene val would pin it down but is slow
+at ~12 s/scene (bs=1 on MPS).
+
+-----------------------------------------------------------------------------------------
+FINE-TUNE (finetune.py)
+-----------------------------------------------------------------------------------------
+training_step (official loss: propose+refine Laplace regression NLL + winner-take-all
+mixture classification NLL) and configure_optimizers (AdamW decay/no-decay split +
+CosineAnnealingLR) ported to predictors/qcnet.py. finetune.py starts from QCNet_AV2.ckpt
+and continues training on MPS; bs=1 so a target batch size is emulated with gradient
+accumulation (--accum_steps) + grad clipping + per-epoch cosine LR. Verified end-to-end:
+6-scene/1-epoch smoke test ran fwd+bwd+step on MPS (loss 1.87: propose -0.19 / refine
+-0.18 / cls 2.24), minADE 0.467->0.391 on the overfit scenes, and the saved
+QCNet_AV2_finetuned.ckpt reloads via from_checkpoint with 0 missing / 0 unexpected.
+Note: only val/test tars are downloaded, so the demo fine-tunes on val; pass --split train
+once train.tar is extracted under the AV2 root.
+
+-----------------------------------------------------------------------------------------
+Notes / deliberate deviations from official
+-----------------------------------------------------------------------------------------
+* Runs at batch_size=1 (single scene), so all `isinstance(data, Batch)` branches collapse
+  to the non-batch path; HeteroData is replaced by a nested dict with tuple keys.
+* torch_cluster caps neighbors in implementation-defined order when max_num_neighbors
+  (=300) is exceeded; our cdist replacement keeps the NEAREST k. With the QCNet radii this
+  cap is rarely hit, so the difference is immaterial.
+* metrics use a plain sum/count accumulator instead of torchmetrics; topk/valid_filter
+  drop the torch_scatter ptr/joint branches (unused for AV2 marginal eval).

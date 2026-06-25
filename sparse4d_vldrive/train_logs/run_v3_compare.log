@@ -1,0 +1,4 @@
+=== [1/2] train_v3 FULL (unfrozen + DN=5 + quality + depth) START Wed Jun 17 23:16:24 PDT 2026 ===
+=== [1/2] train_v3 FULL DONE Thu Jun 18 00:43:49 PDT 2026 ===
+=== [2/2] train_v3 CONTROL (no DN: dn_groups=0) START Thu Jun 18 00:43:49 PDT 2026 ===
+=== [2/2] train_v3 CONTROL DONE Thu Jun 18 01:54:30 PDT 2026 ===

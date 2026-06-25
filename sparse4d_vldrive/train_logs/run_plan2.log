@@ -1,0 +1,14 @@
+=== train_v3 PLANNING-ONLY (detector frozen) START Wed Jun 24 21:03:38 PDT 2026 ===
+=== DONE Wed Jun 24 21:24:07 PDT 2026 ===
+[eval] det (mAP) + motion/plan after planning-only training
+  mAP : 0.4630
+  NDS : 0.4798
+  MOTION (agents, n=4226)
+    minADE       : 0.5887
+    minFDE       : 1.0644
+    brier-minFDE : 1.1724
+    miss-rate    : 0.1275
+  PLANNING (ego, n=81)
+    L2  @1s/2s/3s: 1.503 / 2.691 / 4.029
+    col @1s/2s/3s: 0.000 / 0.000 / 0.000
+=== ALL DONE Wed Jun 24 21:26:51 PDT 2026 ===

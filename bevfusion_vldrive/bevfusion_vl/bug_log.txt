@@ -1,0 +1,115 @@
+MIT-HAN-LAB BEVFusion (det + seg) pure-PyTorch MPS port — root-cause log
+=========================================================================
+Reproduced 2026-06-18. No mmcv/mmdet3d/spconv/bev_pool/CUDA. Run env
+conda run -n simple_bev_vldrive (torch 2.12 MPS), PYTORCH_ENABLE_MPS_FALLBACK=1.
+Reference repo: bevfusion_vldrive/bevfusion (mit-han-lab). Port: bevfusion_vl/.
+
+RESULTS (nuScenes mini_val):
+- DET  mAP 0.5782 / NDS 0.5747 AFTER PatchMerging fix (was 0.5083/0.5431 with broken camera).
+  Per-class: bus .99, car .92, ped .93, cone .90, truck .81, moto .70, bike .53;
+  trailer/construction_vehicle/barrier = 0.00 (absent in mini). The Swin bug hurt det too
+  (cone .51->.90, moto .57->.70, car .85->.92) — camera now contributes correctly to BOTH tasks.
+- SEG  mIoU 0.7124 (official iou@max, 80/81 frames) AFTER PatchMerging fix (was 0.302).
+  drivable 88.9, ped_crossing 79.9, walkway 71.6, carpark 76.4, divider 58.5, stop_line 52.1
+  -- matches/exceeds official full-val per-class (drivable 85.5/walkway 67/stop 52/divider 54).
+- Official full-val: det 68.5/71.4, seg 62.7. mini gap = 2-scene val (3 det classes +
+  stop_line/carpark barely present) + minor calibration. All components load 0/0.
+- Fine-tune (seg): single-frame overfit loss 0.062->0.007 monotonic — training path OK.
+
+------------------------------------------------------------------
+FINDINGS / GOTCHAS
+------------------------------------------------------------------
+1. KEYSTONE — pure-PyTorch sparse 3D conv (model/spconv.py) replaces CUDA spconv.
+   SubMConv3d (output sites == input sites; gather active neighbors) + strided
+   SparseConv3d (rulebook: out=(in+pad-off)//stride, dedup, gather/matmul/scatter).
+   Weight layout (k0,k1,k2,Cin,Cout); coords (b,d0,d1,d2). VERIFIED vs F.conv3d ~1e-5
+   on a fully-dense grid (subm == dense conv there). Without this the whole det+seg
+   LiDAR backbone is impossible on MPS. Dense fallback infeasible (1440²×41).
+
+2. LiDAR "VFE" is just MEAN over points (voxelize_reduce in the model), NOT a learned
+   net. in_channels=5 = mean of [x,y,z,intensity,dt]. voxelize_mean emits coords
+   (b,x,y,z) to match sparse_shape [X,Y,Z]; conv_out collapses z (last dim) into channels.
+
+3. Camera Swin is mmdet-2.x layout (NOT microsoft): patch_embed.projection, stages.N,
+   attn.w_msa.*, ffn.layers.0.0/ffn.layers.1, output norms norm1/2/3. 187 tensors.
+
+4. SECONDFPN uses use_conv_for_no_stride=true => stride-1 deblock is Conv2d 1x1 (NOT
+   deconv). ConvFuser subclasses nn.Sequential (keys 0.*/1.*). Fuser input order at
+   inference = [camera, lidar] (sensors iterated reversed then features reversed).
+
+5. GeneralizedLSSFPN: each level = cat(level_i, upsample(level_{i+1})) -> lateral 1x1
+   -> fpn 3x3 (conv+BN+ReLU); returns 2 levels; vtransform uses [0].
+
+6. DepthLSSTransform (det) uses a SCALAR lidar-depth image (dtransform Conv2d(1,8,..));
+   add_depth_features/height_expand are FALSE for this ckpt. Depth image = project pts
+   via lidar2image+img_aug, scatter dist (coords flipped [1,0]). LSSTransform (seg) has
+   no depth. bev_pool nz=1 (zbound [-10,10,20]).
+
+7. BEV POOLING (the paper's core innovation, model/bev_pool.py): (a) interval reduction
+   — sort frustum pts by BEV cell, cumsum, diff at interval ENDS (QuickCumsum); (b)
+   precompute — gather order / interval boundaries / output indices depend only on fixed
+   calibration -> built ONCE, cached, reused every frame. Numerically ~= index_add
+   scatter-sum. Cross-frame cache reuse costs only 0.0005 mAP (geometry effectively
+   fixed — validates the paper's premise).
+   PERF (benchmarked on M3 Max MPS, real det frame, Nprime~2.0M, C=80): cumsum is NOT
+   faster than index_add_ here — index_add_ wins (reduction-only 21.6 vs 30.4 ms; full
+   29.6 vs 48.8 ms). The "avoid atomic contention" win is CUDA-specific. We keep cumsum
+   for FIDELITY (the paper's named QuickCumsum) + DETERMINISM (fixed sum order; index_add_
+   fast path is nondeterministic — our activation-diff validation needs determinism), NOT
+   speed. PRECOMPUTE (b) is the real, backend-agnostic speedup and helps BOTH paths (caches
+   the argsort): cumsum 48.8->30.4 ms (~1.6x), index_add_ 29.6->21.6 ms. NOTE: the global
+   prefix sum has worse float32 cancellation than per-cell index_add_ (|diff| ~6e-3 on a
+   real 1.8M-pt frame; the earlier ~3e-5 was a small synthetic case) — deterministic != more
+   accurate. bench script: /tmp/bench_bevpool.py.
+   BUG: boundary mask must mark interval END (next-rank-differs), not START — cumsum is
+   read at ends then differenced. start-mask gave max|diff| 8.0.
+
+8. TransFusionHead: heatmap (10 cls) -> local-max NMS k=3 (ped/cone cls 8,9 NO suppression,
+   k=1) -> top-200 queries (class=idx//HW, pos=idx%HW; query_feat gathered from BEV;
+   +class_encoding(one_hot)) -> 1 decoder layer (self-attn + cross-attn to BEV, learned
+   pos embeds via Conv1d MLP; VALUE also gets +pos in cross-attn) -> FFN heads
+   (center,height,dim,rot,vel,heatmap). decode: center*out_size_factor(8)*voxel+pc_range,
+   dim=exp, z=height-dim_z/2, yaw=atan2(rot0,rot1); score=heatmap.sigmoid()*
+   query_heatmap_score*one_hot. nms_type=null (no circle nms), score_thr=0, filter by
+   post_center_range [-61.2..61.2]. bev_pos=create_2D_grid(180,180)+0.5 (buffer, not in ckpt).
+
+9. Box->nuScenes (eval): gravity z=z_bottom+h/2, dims->wlh DIRECTLY (no swap),
+   yaw=-yaw-pi/2; range-filter in EGO frame then ->global (reuse from BEVFusion_robust_vl).
+
+10. SEG GT masks via NuScenesMap.get_map_mask (map files + map_expansion present);
+    masks.transpose(0,2,1); divider=road_divider|lane_divider. GT-flip A/B confirmed
+    orientation CORRECT (identity 30.2 >> flips 16-17). Official eval = iou@max over
+    thresholds [.35..65] (NOT fixed 0.5). Image norm = ToTensor(/255)+ImageNet normalize.
+
+11. det & seg differ: det voxel .075 grid 1440²×41 BEV 180²; seg voxel .1 grid 1024²×41
+    BEV 128². det DepthLSS xbound±54/.3; seg LSS xbound±51.2/.4. Shared SparseEncoder
+    arch (126), decoder (SECOND/SECONDFPN 72+12), fuser (6).
+
+12. DET fine-tune (model/det_loss.py, tools/train_finetune_det.py): TransFusion loss
+    ported — gaussian heatmap target (radius from gaussian_radius(l/8vy,w/8vx)) + gaussian
+    focal; Hungarian match (scipy linear_sum_assignment) in the ENCODED space (cost = cls
+    focal + 0.25*L1 of first 8 dims); cls focal + code-weighted bbox L1 on matched queries.
+    Head refactored: _predict() shared; forward()=no_grad+decode, forward_train()=raw res.
+    GT in lidar frame via get_sample_data: yaw = -atan2(R@[1,0,0]) - pi/2 (mmdet3d lidar yaw),
+    z_bottom = gravity - h/2. Smoke test: encoders frozen, overfit 1 frame -> loss 19.8->16.4,
+    heatmap monotonic 1.56->0.48, all 68 GT matched. Verifies det training path.
+    (Faithful subset; omits rotated-IoU matching cost + per-decoder-layer aux + IoU loss.)
+
+FINAL: both tasks reproduced (DET mAP .508/NDS .543, SEG mIoU .302 mini_val) + precomputed
+BEV pooling + fine-tune verified both. Inference/eval/fine-tune all work as the task asked.
+
+13. **SEG mIoU ROOT CAUSE — PatchMerging unfold-order bug (FIXED).** Diagnosis path:
+    isolated to camera stream (lidar-only seg drivable 74.9 good, full 57.3 WORSE, camera-only
+    4.4 garbage -> camera dragged fusion down). Camera BEV was a radial depth-smear (soft
+    monocular depth: peak softmax 0.031 vs uniform 0.0085). Ruled out orientation/flip/pool/
+    translation/imgnorm. Activation diff vs OFFICIAL mmdet Swin (uniad2.0 env, mmcv1.6/mmdet2.26,
+    same input image) showed my Swin output rel-diff >1.0 at all 3 levels -> Swin port bug.
+    ROOT CAUSE: my PatchMerging used microsoft cat order [x00,x10,x01,x11]; the mmcv/mmdet
+    Swin (which the checkpoint was trained with) uses nn.Unfold(k=2,s=2) -> channel order
+    [c@00,c@01,c@10,c@11] (per-channel contiguous). Wrong order scrambled the reduction
+    Linear input for stages 1-3. FIX: PatchMerging via nn.Unfold (model/swin.py). After fix
+    my Swin == official to max|diff| 0.0 (bit-exact); depth peak 0.031->0.118.
+    IMPACT: seg fusion mIoU (6-frame) 27.2 -> 79.6; camera-only 4.4 -> 46.8; camera now HELPS.
+    Det tolerated the bug (lidar-dominated) which is why it wasn't caught earlier.
+    LESSON: reference activation diff (even CPU-only partial import of official modules in a
+    separate mmcv env) is the decisive tool; "loads 0/0 + runs" does NOT prove a faithful port.

@@ -1,0 +1,22 @@
+Error:
+OMP: Error #15: Initializing libomp.dylib, but found libomp.dylib already initialized.
+OMP: Hint This means that multiple copies of the OpenMP runtime have been linked into the program. That is dangerous, since it can degrade performance or cause incorrect results. The best thing to do is to ensure that only a single OpenMP runtime is linked into the process, e.g. by avoiding static linking of the OpenMP runtime in any library. As an unsafe, unsupported, undocumented workaround you can set the environment variable KMP_DUPLICATE_LIB_OK=TRUE to allow the program to continue to execute, but that may cause crashes or silently produce incorrect results. For more information, please see http://openmp.llvm.org/
+Reason:
+This is a common macOS issue where multiple packages (e.g., PyTorch + OpenCV or NumPy) each bundle their own libomp.dylib.
+Solution:
+Quick workaround:
+    1. set the env var before running:
+    KMP_DUPLICATE_LIB_OK=TRUE python check_mps.py
+    2. Or export it persistently in your ~/.zshrc or at the top of your script:
+    export KMP_DUPLICATE_LIB_OK=TRUE
+Better fix — 3. find which packages are shipping duplicate OpenMP runtimes:
+    find $(python -c "import sys; print(sys.prefix)") -name "libomp.dylib" 2>/dev/null
+    OUTPUT: 
+    /Users/trish/miniforge3/envs/simple_bev_vldrive/lib/libomp.dylib
+    /Users/trish/miniforge3/envs/simple_bev_vldrive/lib/python3.12/site-packages/torch/lib/libomp.dylib
+    Reason:
+    Two libomp.dylib files in the same conda env — PyTorch ships its own and conda's llvm-openmp installs another. The cleanest fix is to replace the conda one with a symlink to PyTorch's:
+    Final Solution: This makes everything use PyTorch's copy.
+    cd /Users/trish/miniforge3/envs/simple_bev_vldrive/lib
+    mv libomp.dylib libomp.dylib.bak
+    ln -s python3.12/site-packages/torch/lib/libomp.dylib libomp.dylib

@@ -1,0 +1,12 @@
+=== train_v3 PLANNING agent-frame + MAP (planning_only) START Wed Jun 24 21:50:17 PDT 2026 ===
+=== DONE Wed Jun 24 22:10:51 PDT 2026 ===
+[eval] motion/plan (agent-frame + map)
+  MOTION (agents, n=4226)
+    minADE       : 0.4922
+    minFDE       : 0.8923
+    brier-minFDE : 0.9721
+    miss-rate    : 0.1119
+  PLANNING (ego, n=81)
+    L2  @1s/2s/3s: 1.962 / 3.339 / 4.196
+    col @1s/2s/3s: 0.000 / 0.000 / 0.000
+=== ALL DONE Wed Jun 24 22:11:40 PDT 2026 ===

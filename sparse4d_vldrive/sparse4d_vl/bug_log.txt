@@ -1,0 +1,570 @@
+================================================================================
+Sparse4D-v2 Pure-PyTorch Port — Debugging Log
+================================================================================
+Result: mAP 0.0000 → 0.4383, NDS 0.4585 on nuScenes mini_val
+        (official reference: mAP 0.4392, NDS 0.5384 on full val)
+Checkpoint: sparse4d_vl/model/checkpoints/sparse4dv2_r50_HInf_256x704.pth
+Date: 2026-06-11
+
+Every bug below was a CONVENTION MISMATCH against the pretrained checkpoint:
+dims order, reshape layout, residual source, coordinate frame, preprocessing
+geometry. None of them crash; all of them silently degrade accuracy.
+
+--------------------------------------------------------------------------------
+BUG 1 — Per-stage decoder weights were shared (should be unique per stage)
+--------------------------------------------------------------------------------
+Files: model/sparse4d.py, model/checkpoint.py
+
+What was wrong:
+  Our model had a single `head_temporal` whose weights were reused for all 5
+  temporal decoder stages, loaded from checkpoint layers 32-38 (stage 5 only).
+  The official checkpoint contains 39 UNIQUE layers — every stage has its own
+  DFA / FFN / LayerNorm / refinement weights:
+    Layer 0-3   : stage 0 (deformable, ffn, norm, refine)
+    Layers 4-10 : stage 1 (temp_gnn, gnn, norm, deformable, ffn, norm, refine)
+    Layers 11-17: stage 2,  18-24: stage 3,  25-31: stage 4,  32-38: stage 5
+  Stage 5's refinement Scale values are tiny (0.02-0.07) because it was trained
+  to make final micro-corrections. Applying it 5 times collapsed classification
+  scores (max score 0.49 → 0.26, anchors >0.3 dropped from 47 to 0).
+
+Fix:
+  `head_temporal_stages = nn.ModuleList([Sparse4DHead(...) for _ in range(5)])`,
+  each loaded from its own checkpoint slice (base index = 4 + (k-1)*7).
+
+--------------------------------------------------------------------------------
+BUG 2 — Image preprocessing: direct resize squashed the images
+--------------------------------------------------------------------------------
+File: data/loader.py
+
+What was wrong:
+  We resized 1600x900 directly to 704x256: x-scale 0.44 but y-scale 0.284,
+  vertically squashing every image by ~35%. The ResNet backbone never saw
+  distorted images during training, so every feature it produced was degraded.
+
+Fix (matches reference ResizeCropFlipImage test path, see
+  Sparse4D/projects/mmdet3d_plugin/datasets/nuscenes_3d_det_track_dataset.py
+  `_sample_augmentation`, test_mode branch):
+    resize = max(fH/H, fW/W) = max(256/900, 704/1600) = 0.44
+    1600x900 → 704x396 (uniform), then crop rows [140:396] (keep bottom 256)
+  Intrinsics: K[0] *= 0.44; K[1] *= 0.44; K[1,2] -= 140 (crop offset).
+
+--------------------------------------------------------------------------------
+BUG 3 — Decoder dataflow: temporal merge must happen MID-decoder
+--------------------------------------------------------------------------------
+Files: model/instance_bank.py, model/sparse4d.py, model/sparse4d_head.py
+
+What was wrong:
+  We concatenated cached temporal instances with fresh anchors BEFORE stage 0.
+  The reference instead:
+    1. get()    → stage 0 runs purely on the 900 fresh K-means priors
+    2. update() → after stage 0's refine: keep top-300 stage-0 predictions,
+                  prepend the 600 cached instances → [cached 600, fresh 300]
+                  goes through stages 1-5
+  Stage 0's weights were trained to expect K-means priors; we fed it a mixture.
+
+  Plus three attention-wiring errors (see reference sparse4d_head.py forward):
+  a) query_pos / key_pos: mmcv MultiheadAttention adds the anchor embedding to
+     query and key (NOT value) before attention. Our GraphAttention ignored
+     anchor embeddings entirely — attention had no positional information.
+  b) temp_gnn keys/values = the 600 cached features ONLY (we used
+     cat([current, temporal])). key_pos = anchor_embed[:, :600] since cached
+     instances occupy slots 0-599 after update().
+  c) anchor_embed is recomputed after every refine (equivalently: at the start
+     of each stage) so positional info tracks the refined boxes.
+
+--------------------------------------------------------------------------------
+BUG 4 — Temporal anchor projection must rotate yaw AND velocity
+--------------------------------------------------------------------------------
+File: model/instance_bank.py
+
+What was wrong:
+  When projecting last frame's cached anchors into the current lidar frame we
+  only transformed positions. The reference (`anchor_projection` in
+  detection3d_blocks.py) also rotates:
+    pos        = R @ (pos + vel * dt) + t
+    [cos, sin] = R[:2,:2] @ [cos, sin]     (yaw rotates with the frame)
+    vel        = R @ vel
+  where T = inv(lidar2global_cur) @ lidar2global_prev,
+        lidar2global = ego2global @ lidar2ego.
+  Without this, every ego rotation (turning) left cached boxes with stale
+  headings/velocities that the small per-stage refinements couldn't fix.
+
+--------------------------------------------------------------------------------
+BUG 5 — Dims convention: anchor slot 3 is LENGTH, not width
+--------------------------------------------------------------------------------
+Files: tools/eval.py, data/finetune_loader.py
+
+What was wrong:
+  The reference's output_to_nusc_box does a silent swap before building the
+  nuScenes box:
+      nus_box_dims = box_dims[..., [1, 0, 2]]
+  Geometrically, anchor slot 3 is the extent ALONG THE HEADING axis — verify in
+  the keypoint generator: fix_scale=[0.45,0,0] scales local-X by exp(anchor[3])
+  and local-X is the heading direction. nuScenes 'size' is [width, length,
+  height]. We submitted unswapped — equivalent to every box rotated 90°.
+  This one line explained the mystery combo of terrible ASE (0.92 for cars,
+  w≈2 vs l≈4.7) + terrible AOE (~1.2 rad) while positions were fine.
+  Pedestrians/cones (w≈l) were least affected — a useful fingerprint.
+  The same swap is needed when loading GT for fine-tuning (ann['size']=[w,l,h]
+  → anchor slots [log(l), log(w), log(h)]).
+
+--------------------------------------------------------------------------------
+BUG 6 — DFA attention-weight memory layout (THE BIG ONE)
+--------------------------------------------------------------------------------
+File: model/blocks.py (_get_weights)
+
+What was wrong:
+  Reference reshapes the weights_fc output as:
+      weights_fc(feature).reshape(bs, N, -1, G)    # ← group FASTEST
+                          .softmax(dim=-2)          # over cam × level × point
+                          .reshape(bs, N, C, L, P, G)
+  The 416 output neurons (G=8 × L=4 × P=13) are laid out (level, point, group)
+  with GROUP VARYING FASTEST. Ours did reshape(B, N, C, G, L, P) — group
+  slowest. Both are "valid" tensor ops, but the layout is baked into the
+  pretrained linear layer: our reshape assigned each learned weight to the
+  WRONG (group, level, point) triple, scrambling the entire sampling attention.
+  The model still half-worked because softmax mass landed on SOME sampled
+  features — nothing crashes, results are just mediocre. Insidious.
+
+  Also removed FOV masking (masked_fill(-1e4) on out-of-view points) that we
+  had added: the reference does NO masking. Out-of-view points project outside
+  [-1,1] and grid_sample's zero padding contributes zero features while still
+  occupying softmax probability mass. That is the distribution the network was
+  TRAINED with; masking redistributes weight in a way it never saw.
+
+--------------------------------------------------------------------------------
+BUG 7 — AsymmetricFFN: identity skip from the PRE-NORMED input
+--------------------------------------------------------------------------------
+File: model/blocks.py (AsymmetricFFN)
+
+What was wrong:
+  Reference forward:
+      if self.pre_norm is not None:
+          x = self.pre_norm(x)        # ← x is REASSIGNED first
+      out = self.layers(x)
+      if identity is None:
+          identity = x                # ← identity is the NORMED x
+      return self.identity_fc(identity) + out
+  We saved identity = x BEFORE pre_norm, so our skip path carried the
+  un-normalized 512-dim DFA output (very different scale) through identity_fc.
+  Every one of the 6 decoder stages compounded this error.
+
+  Fixes 6+7 together took mini_val mAP from 0.013 → 0.4383.
+
+--------------------------------------------------------------------------------
+BUG 8 — Smaller infrastructure fixes
+--------------------------------------------------------------------------------
+a) GT in lidar frame (data/finetune_loader.py):
+   nuScenes annotations are in the GLOBAL frame; we fed them raw to the loss,
+   so training loss was 47-130 (prediction and GT in different coordinate
+   systems). Converting global → ego → lidar dropped loss to ~1.1.
+   Yaw: yaw_lidar = yaw_global - atan2(R_l2g[1,0], R_l2g[0,0]).
+   Velocity: rotate by R_l2g.T.
+
+b) Checkpoint plumbing (model/checkpoint.py, train_finetune.py):
+   Finetuned checkpoints store weights under 'model' (not 'state_dict'), and
+   the temporal cache buffers (_cached_*) must be excluded from save/load —
+   they are per-scene runtime state, not weights (shape mismatch 600 vs 0 on
+   load otherwise).
+
+c) MPS: training needs PYTORCH_ENABLE_MPS_FALLBACK=1 because
+   aten::grid_sampler_2d_backward has no MPS kernel (forward is fine, so eval
+   runs natively). ~1 frame/s on M3 Max with frozen backbone.
+
+d) eval.py's default --checkpoint path is wrong relative to repo root; pass
+   the path explicitly or it silently evaluates RANDOM weights ("[ckpt] no
+   checkpoint — evaluating with random weights" in the log).
+
+e) nuscenes_kmeans900.npy is NOT needed: the checkpoint's own trained anchors
+   are strictly better (the npy has uniform sizes log_wlh=1.0 and zero yaw).
+
+--------------------------------------------------------------------------------
+GENERAL LESSONS
+--------------------------------------------------------------------------------
+1. When porting against a pretrained checkpoint, read the reference FORWARD
+   code line-by-line. Configs and papers do not document reshape layouts,
+   residual sources, or silent dim swaps.
+
+2. Use the nuScenes metric decomposition as a fingerprint:
+   - ASE bad + AOE bad + ATE fine        → dims/yaw convention bug (Bug 5)
+   - scores healthy but everything weak  → scrambled-but-functional weights
+                                            (reshape layout, Bug 6)
+   - classification collapses over stages→ wrong per-stage weights (Bug 1)
+   - velocities good (AVE low)           → temporal pipeline is fine, look
+                                            elsewhere
+   - first frame weak, later frames good → temporal flow works; single-frame
+                                            path or preprocessing suspect
+
+3. A wrong tensor reshape of a pretrained linear layer's output is the most
+   insidious bug class: dimensions match, code runs, gradients flow, output is
+   plausible — only accuracy quietly suffers.
+
+4. Verify intermediate signals, not just the final metric: per-stage max
+   scores, count of anchors above thresholds, nearest-GT distances in the
+   model's native frame. These localize the failing component fast.
+
+================================================================================
+Sparse4D-v3 Pure-PyTorch Port — Debugging Log
+================================================================================
+Result: mAP 0.0089 → 0.4630, NDS 0.4798 on nuScenes mini_val
+        (official reference config header: mAP 0.4647, NDS 0.5636 on full val)
+Checkpoint: sparse4d_vl/model/checkpoints/sparse4dv3_r50.pth
+Date: 2026-06-13
+
+v3 architecture deltas vs v2 (all reproduced):
+  - decoupled attention: q/k/v run at 2*embed_dims=512 with shared
+    fc_before (256→512, no bias) and fc_after (512→256, no bias). The mmcv
+    identity residual lives at 512 INSIDE the attention; fc_after maps to 256
+    and REPLACES instance_feature (no outer residual).
+  - v3 anchor encoder: per-component cat (pos128 + size32 + yaw32 + vel64 = 256),
+    no output_fc.  (v2 summed equal-dim components.)
+  - quality branch: refine emits (centerness, yawness); decoder re-ranks final
+    score by sigmoid(cls) * sigmoid(centerness).
+  - flat checkpoint layout is still 39 head.layers (stage0 = 0-3,
+    stages1-5 = 4-38, base=4+(k-1)*7), same as v2.
+
+The methodology that cracked it: build the REFERENCE head in the mmcv env
+(uniad2.0), run it on the SAME real feature maps my model saw, dump per-stage
++ per-op intermediates, and diff. (bug_log Lesson 4, applied at module level.)
+
+--------------------------------------------------------------------------------
+V3-BUG 1 — Decoupled GNN dropped value=instance_feature  (stage maxdiff 10.8)
+--------------------------------------------------------------------------------
+File: model/sparse4d_head_v3.py (_graph_attn / 'gnn' op)
+
+What was wrong:
+  The reference graph_model for the SELF-attention 'gnn' op passes
+  value=instance_feature explicitly:
+      graph_model(i, instance_feature, value=instance_feature, query_pos=embed)
+  which means v = fc_before(instance_feature) (256→512). My first cut let
+  value default to the cat([feat, pos]) query (raw 512). temp_gnn (first frame,
+  no cache) DOES use the raw-query default — only the 'gnn' op needs the
+  explicit fc_before(value) path. Getting these two wired identically took a
+  single decoder stage from maxdiff 10.8 → 0.06 vs the reference.
+
+Fix: 'gnn' op calls _graph_attn(..., kv_feat=instance_feature,
+     kv_embed=anchor_embed) so k = cat(feat, embed) and v = fc_before(feat).
+
+--------------------------------------------------------------------------------
+V3-BUG 2 — fix_scale is TRAINED in v3, must be loaded (THE structural one)
+--------------------------------------------------------------------------------
+Files: model/blocks.py (SparseBox3DKeyPointsGenerator), model/checkpoint.py
+
+What was wrong:
+  The 7 "fixed" deformable keypoint offsets (kps_generator.fix_scale) are a
+  config constant in v2 ([[0,0,0],[0.45,0,0],...]) and ABSENT from the v2
+  checkpoint — so hardcoding the default was correct for v2. In v3 the
+  checkpoint SHIPS head.layers.N.kps_generator.fix_scale with TRAINED,
+  non-default values (e.g. [[0.22,0.46,-0.16],[0.16,-0.67,-0.58],...]).
+  My generator hardcoded _FIX_SCALE_DEFAULT and the checkpoint's fix_scale was
+  silently dropped as an "unexpected key".
+
+  Fingerprint that localized it: per-keypoint diff showed the 6 LEARNABLE
+  points matched to 1e-6 while all 7 FIXED points differed — even point 0
+  (fix_scale [0,0,0]) whose value must equal the anchor centre. Learnable
+  points matching proves size/rotation/centre/learnable_fc all matched, so the
+  only remaining input to the fixed points was fix_scale itself.
+
+Fix: register fix_scale as a buffer (loads from state_dict when present; v2
+  checkpoints omit it so the default is kept), and map
+  head.layers.N.kps_generator.fix_scale in checkpoint.py (v3 branch).
+  Result: all 6 stages went from maxdiff ~10 to <2e-4; eval 0.0089 → 0.4630.
+
+--------------------------------------------------------------------------------
+V3-BUG 3 — Reference anchor_projection yaw bug must be REPLICATED (+2.4 mAP)
+--------------------------------------------------------------------------------
+File: model/instance_bank.py (_project_anchors, v3_yaw_projection_bug=True)
+
+What was wrong (in the reference, on purpose to match the checkpoint):
+  Sparse4Dv3's SparseBox3DKeyPointsGenerator.anchor_projection rebuilds the
+  projected anchor as cat([center, size, yaw, vel]) and writes the rotated
+  [cos', sin'] pair straight into slots [6,7] = [SIN_YAW, COS_YAW] — i.e.
+  cos lands in the sin slot and vice-versa (the reference even has a
+  "# TODO: Fix bug" comment there). The released checkpoint was trained with
+  this swap, so faithful reproduction must replicate it.
+
+  A/B with everything else correct:
+    yaw_swap=True  (replicate ref bug): mAP 0.4630  NDS 0.4798
+    yaw_swap=False ("correct" yaw math): mAP 0.4392  NDS 0.4267
+  +2.4 mAP / +5.3 NDS from matching the checkpoint's training-time convention.
+
+  LESSON: a pretrained checkpoint encodes the EXACT (even buggy) transforms it
+  was trained with. Reproducing the released numbers means replicating the
+  reference's bugs, not "fixing" them. Gate such replications behind a flag
+  (v3_yaw_projection_bug) so the correct path stays available.
+
+--------------------------------------------------------------------------------
+V3 file map (postfix convention: *_v2 = v2-only, *_v3 = v3-only, shared = base)
+--------------------------------------------------------------------------------
+  sparse4d_base.py        — shared backbone/normalise/meta helpers (v2 + v3)
+  sparse4d_v2.py / _v3.py — end-to-end models
+  sparse4d_head_v2.py / _head_v3.py — decoder stage (v3 = decoupled attn)
+  detection3d.py (v2) / detection3d_v3.py — encoder/refine/decoder
+    (v3 = cat-encoder + quality branch + centerness re-rank)
+  blocks.py, instance_bank.py, checkpoint.py, loss.py, backbone.py — shared
+  Eval:  python sparse4d_vl/tools/eval.py --version v3 --checkpoint .../sparse4dv3_r50.pth
+  Infer: python sparse4d_vl/infer.py --version v3 --checkpoint .../sparse4dv3_r50.pth --scene N
+  Train: PYTORCH_ENABLE_MPS_FALLBACK=1 python train_finetune.py --model_version v3 \
+           --checkpoint .../sparse4dv3_r50.pth
+================================================================================
+
+
+================================================================================
+TRAINING-TECHNIQUE EXTENSIONS (2026-06-18): dense depth, temporal instance
+denoising (DN), and v3 quality supervision — with a controlled mini_val study.
+================================================================================
+
+CONTEXT
+  These are TRAINING-ONLY additions (all invisible at inference; eval path is
+  byte-identical to the reproduced checkpoints). Goal: exercise the three
+  Sparse4D training techniques that the pure-inference reproduction omitted, and
+  measure them honestly on nuScenes-mini (~400 keyframes).
+
+NEW FILES / CHANGES
+  data/lidar_depth.py     — LiDAR sweep (np.fromfile, 5 cols) projected to per-cam
+                            sparse depth via the SAME projection_mat as the loader
+                            (3rd row of proj@p IS depth, since K[2]=[0,0,1,0]).
+  model/depth_head.py     — 3-conv depth branch on FPN L0 + masked-L1 loss.
+  model/denoising.py      — DN groups (noised GT copies), DINO attn mask
+                            (regular<->DN blocked, cross-group DN blocked, no
+                            fully-masked rows), DNLoss (direct, known match).
+  sparse4d_v2.py/_v3.py   — optional with_depth branch; v3.forward_train(DN);
+                            v3 stage_preds/dn_stage_preds carry quality (3-tuples).
+  sparse4d_head_v3.py     — attn_mask threaded into _graph_attn (gnn always;
+                            temp_gnn only in self-attn fallback — cross-attn to
+                            the 600-cache has no DN in its keys, so no mask).
+  loss.py                 — Sparse4DLoss.quality_loss (shared); forward() takes
+                            pred_quality; forward_multi unpacks 2- or 3-tuples.
+  train_v2.py / train_v3.py — UNFROZEN backbone (stem+layer1+BN stay frozen per
+                            frozen_stages=1/norm_eval); backbone at 0.1x LR;
+                            combined det+(dn)+depth loss.
+  train_finetune.py       — --dn_groups N (v3) → forward_train + DNLoss.
+
+V3-EXT BUG 1 — fine-tuning v3 WITHOUT quality supervision wrecks ranking.
+  Symptom: first v3 fine-tune (frozen backbone, DN on, NO cns/yns) DROPPED
+  mini_val mAP 0.4630 -> 0.3542 (-0.109).
+  Root cause: the v3 decoder ranks by sigmoid(cls)*sigmoid(centerness). Our
+  forward_multi supervised only cls+box, so cls/box drifted while the centerness
+  (quality) head stayed at its pretrained calibration -> score ranking decayed.
+  The OFFICIAL v3 loss (Sparse4Dv3 .../detection3d/losses.py) supervises both:
+    cns_target = exp(-||pred_xyz - gt_xyz||_2)         (CrossEntropy use_sigmoid)
+    yns_target = 1[ cos_sim(pred[sin,cos], gt[sin,cos]) > 0 ]   (GaussianFocal)
+  Fix: ported both targets (BCE-with-logits stand-ins) into Sparse4DLoss +
+  DNLoss, carried quality through stage_preds. LESSON: when fine-tuning a head
+  whose decoder consumes an auxiliary branch, you MUST keep that branch
+  co-supervised or its calibration goes stale and silently hurts ranking.
+
+CONTROLLED RESULT (mini_val, 6 epochs, lr 2e-5, backbone 0.1x):
+  config                                            mAP      NDS
+  v3 baseline (pretrained)                          0.4630   0.4798
+  v3 CONTROL  (unfrozen + quality + depth, NO DN)   0.4526   0.4756   (-0.010)
+  v3 FULL     (same + DN=5)                          0.3943   0.4385   (-0.069)
+  [earlier broken: frozen + DN + no-quality]        0.3542   --
+
+  Read-out:
+  (a) Quality-fix recovered the regression: the broken -0.109 became -0.010 once
+      cns/yns were supervised. The recipe is now ~mAP-neutral on mini.
+  (b) DN HURTS on mini (FULL vs CONTROL = -0.058 mAP). Expected: DN is a
+      large-scale matching stabiliser; on 400 frames its heavy loss term (~1.0,
+      = the FULL-minus-CONTROL total gap) competes with detection, and our DN is
+      single-frame (no temporal cache propagation = the weaker variant).
+  LESSON: nothing out-trains official weights on 400 frames; DN's value is at
+  scale. Best mini recipe = unfrozen backbone + quality + depth, no DN.
+  DN left implemented-and-correct but OFF by default; not pursued further on mini.
+
+
+================================================================================
+DETECTION-AND-TRACKING (2026-06-18): v3 track-ID propagation + AMOTA eval.
+================================================================================
+
+Sparse4D-v3's headline is end-to-end detection AND tracking with NO separate
+association/Re-ID: the recurrent temporal instance bank already maintains object
+identity, so "tracking" is just assigning IDs to the persistent instances.
+
+IMPLEMENTATION (inference-only; training path unchanged)
+  instance_bank.py:
+    - state: instance_id (1,num_anchor), prev_id counter, temp_confidence; all
+      cleared in reset_state (per scene).
+    - get_instance_id(cls_logits, threshold): cached temporal slots (0..599,
+      placed by update()) INHERIT their prior ID; fresh slots with
+      sigmoid(max cls) >= threshold get new sequential IDs from prev_id.
+    - _update_instance_id: keep the top-num_temp IDs by the SAME confidence
+      cache() used to pick cached_feature/anchor (stored as temp_confidence),
+      padded to num_anchor with -1 -> next frame's leading slots stay ID-aligned
+      with the cached features. (Faithful to official instance_bank.py.)
+  detection3d_v3.py SparseBox3DDecoderV3: optional instance_id arg; track IDs
+    gathered through the same topk/sort/threshold as the boxes -> 'track_ids'.
+  sparse4d_v3.py forward: after cache(), if not self.training, get_instance_id()
+    and pass to decoder. (forward_train / eval-detection paths untouched.)
+  tools/eval_track.py: nuScenes tracking submission (7 tracking classes only;
+    scene-prefixed unique IDs; drop track_id<0) + official TrackingEval (AMOTA).
+    NOTE: required `pip install motmetrics` (TrackingEval dep, not in env).
+
+GOTCHA: get_instance_id MUST run AFTER cache() — it relies on temp_confidence
+(set in cache) so the kept-ID selection matches the cached feature selection,
+keeping IDs aligned across frames. Verified: ~167-170 IDs persist frame-to-frame
+in scene 0; IDs reset per scene.
+
+RESULT (sparse4dv3_r50.pth, mini_val, TrackingEval):
+  AMOTA 0.6265  AMOTP 0.7721  MOTA 0.6314  recall 0.7089
+  per-class AMOTA: bus 1.00, truck 0.70, car 0.67, motorcycle 0.63,
+    pedestrian 0.59, bicycle 0.18, trailer n/a (none in mini_val GT).
+  (Official v3 ~0.57 AMOTA on FULL val; mini_val is 2 easy scenes, not
+  comparable in absolute terms — establishes the pipeline works end-to-end.)
+  Run: PYTORCH_ENABLE_MPS_FALLBACK=1 python sparse4d_vl/tools/eval_track.py \
+         --checkpoint .../sparse4dv3_r50.pth --eval-set mini_val
+
+
+================================================================================
+MOTION FORECASTING (2026-06-18): v3 multi-modal trajectory prediction header.
+================================================================================
+
+On top of v3 detection+tracking, motion forecasting is a small head on the
+temporally-fused instance feature (the same recurrent query that drives
+tracking) — like the query-based forecasting in ViP3D / UniAD MotionFormer, kept
+to a transparent MLP.
+
+IMPLEMENTATION
+  model/motion_head.py:
+    - TrajectoryHead: instance_feature (B,N,D) -> trajectories (B,N,K,T,2)
+      (future x,y DISPLACEMENTS from current centre, current lidar frame) +
+      mode_logits (B,N,K). Defaults K=6 modes, T=12 steps (6 s @ 2 Hz).
+    - MotionLoss: multi-modal winner-takes-all — per-mode masked ADE picks the
+      closest mode, regress ONLY that mode (masked smooth-L1), classify the
+      winner (CE on mode_logits). Skips objects with no valid future.
+    - motion_metrics: minADE / minFDE / miss-rate (2 m) over the K modes.
+  data/finetune_loader.py: future_steps arg. For each GT, follow the nuScenes
+    instance 'next' chain T steps, transform each future global centre into the
+    CURRENT lidar frame, store displacement-from-now -> gt_futures (M,T,2) +
+    gt_future_mask (M,T) (False past end-of-track / scene end).
+  sparse4d_v3.py: with_motion flag -> self.motion_head; forward (eval) and
+    forward_train emit trajectories/traj_mode_logits from the FINAL-stage
+    instance feature; forward_train also returns final_anchor/final_cls so the
+    training loop can Hungarian-match (criterion._match) and gather matched
+    trajectories for MotionLoss. detection3d_v3 decoder gathers per-detection
+    trajectories+mode probs (same anchor selection as boxes/track_ids).
+
+VERIFIED (smoke, untrained head): GT 68 objs, ~10.7/12 valid future steps;
+forward_train motion loss flows gradient to the head; each of 298 eval
+detections carries (K=6, T=12, 2) trajectories + mode probs + track_id.
+Untrained minADE ~2.5 / minFDE ~4.5 m (head is random, not in checkpoint) —
+needs training to be meaningful.
+
+USAGE (training): build Sparse4Dv3(with_motion=True); loader with
+future_steps=12; total loss += MotionLoss(matched traj). No train script wired
+yet (head is random-init; would need a train_v3 --motion flag + minADE eval).
+
+
+================================================================================
+SPARSEDRIVE END-TO-END (2026-06-24): motion prediction + ego planning on v3.
+================================================================================
+
+End-to-end perception→prediction→planning on Sparse4D-v3's sparse instance
+features (ref: github.com/swc-17/SparseDrive). Two QCNet-style first, then
+realigned to SparseDrive after fetching the real motion_planning_head.py.
+
+MODULES (model/motion_planning.py)
+  build_anchors      : kmeans trajectory anchors — agents (K=6,T=12) + per-command
+                       ego (3 cmds, ego_steps=6=3s). Cached to data/motion_anchors.npz.
+  AgentMotionHead    : agent–agent self-attention (interaction) + ANCHORED multi-
+                       modal head (traj = anchor + regressed offset) + mode cls.
+  EgoPlanner         : learnable ego query CROSS-ATTENDS agent features; command-
+                       conditioned head where ego_fut_mode=3 == driving commands
+                       (right/straight/left), ego_fut_ts=6. (Corrected from a first
+                       cut of 3×6 after reading the repo: the 3 modes ARE commands.)
+  AgentMotionLoss    : WTA — best mode by masked ADE, smooth-L1 + CE on winner.
+  PlanLoss           : command-mode L1 + CE + soft collision penalty.
+  PlanMeter          : L2@1/2/3s + collision rate.  (MotionMeter reused for agents.)
+data/finetune_loader: future_steps + plan flags → agent gt_futures, ego_future
+  (current ego frame, from ego_pose 'next' chain) + driving command (lateral sign).
+
+TWO MOTION HEADS (mutually exclusive flags):
+  --motion   -> TrajectoryHead (QCNet): anchor-free, Laplace (loc,scale), NO agent
+                interaction, mixture-NLL loss. Dormant.
+  --planning -> AgentMotionHead+EgoPlanner (SparseDrive): anchored, point, agent
+                interaction, WTA loss. THE LIVE head.
+
+SD-EXT BUG — planning training collapsed the detector. First run
+(train_v3 --planning --freeze_backbone --lr 2e-4) trained the detection HEAD too
+(det loss active) and at lr 2e-4 over 6 epochs the detector collapsed to 0
+detections at threshold. Motion/plan metrics still looked fine ONLY because
+eval_motion matches predicted anchors to GT via Hungarian regardless of score.
+Caught via `infer --planning` (detections=0). Fix: --planning_only freezes the
+ENTIRE detector and trains only motion/ego heads (0.97M params). LESSON (recurring
+this session): when adding a head on a converged representation, freeze it — don't
+let the new task's loss + LR drift what already works.
+
+RESULT (sparse4dv3_r50, --planning_only, 6 ep lr 2e-4, mini_val):
+  detection mAP 0.4630 / NDS 0.4798  (IDENTICAL to baseline — detector frozen)
+  motion  minADE 0.589  minFDE 1.064  brier-minFDE 1.172  MR 0.128  (n=4226)
+  plan    L2 1.50/2.69/4.03 m @1/2/3s   collision 0/0/0  (n=81)
+  Train loss 11.5→6.8 monotone; plan L2@1s 4.0→1.6 over epochs.
+
+Run:  PYTORCH_ENABLE_MPS_FALLBACK=1 python train_v3.py --planning --planning_only \
+        --lr 2e-4 --epochs 6 --checkpoint .../sparse4dv3_r50.pth
+Eval: python sparse4d_vl/tools/eval_motion.py --checkpoint <ckpt> --eval-set mini_val
+Infer:python sparse4d_vl/infer.py --version v3 --planning --checkpoint <ckpt> --scene N
+
+FIDELITY CAVEATS vs paper: scene-frame anchors (not per-agent heading frame),
+anchor+offset (not anchor-as-query + cumsum-delta), single interaction layer,
+no agent–map attention / online mapping, collision penalty instead of the repo's
+ego-status regression.
+
+
+================================================================================
+FIDELITY DEEPENING (2026-06-24): per-agent-frame anchors + agent–map attention.
+================================================================================
+
+Closed two of the documented SparseDrive simplifications.
+
+(1) PER-AGENT-FRAME ANCHORS (model/motion_planning.py)
+  build_anchors now rotates each GT future into the agent HEADING frame (GT
+  sin@6/cos@7) before kmeans → canonical anchors (forward = +x; turns in y).
+  AgentMotionHead predicts anchor+offset in agent frame then ROTATES back to
+  lidar via the anchor's yaw. GT stays lidar-frame so the loss is unchanged.
+  Effect: anchor endpoints x∈[0,33.7] (all forward), y∈[-11.6,7.8] (turns);
+  epoch-0 train minADE 0.90 vs 1.52 scene-frame (much better warm start).
+
+(2) AGENT–MAP ATTENTION (loader + MapEncoder + cross-attn)
+  finetune_loader(with_map): NuScenesMap road/lane dividers near ego → lidar
+  frame, CLIPPED to ego radius (extract_line returns the whole divider), resample
+  20 pts, pad 50, cached per sample, into img_metas. MapEncoder = PointNet
+  (per-pt MLP → maxpool → token). AgentMotionHead gets an agent→map cross-attn
+  layer (padding-masked, skipped if no map). Stand-in for SparseDrive's ONLINE
+  map instances using the HD map (GT-map context, not predicted).
+  Wiring: with_map through Sparse4Dv3 + train_v3 --with_map; eval_motion
+  AUTO-DETECTS map from the checkpoint (any 'map_encoder' key) so train/eval match.
+
+RESULT (--planning_only --with_map, agent-frame anchors, mini_val) vs scene-frame:
+  motion minADE 0.589→0.4922  minFDE 1.064→0.8923  brier 1.172→0.9721  MR .128→.112
+  (~16% better motion). planning L2 ~flat (1.5→2.0 @1s, noisy n=81; ego planner
+  unaffected by agent-frame anchors, map helps it only via agent features).
+  detection mAP 0.4630 unchanged (planning_only freeze).
+  NOTE: rebuilt anchors in agent frame (new cache motion_anchors_af.npz) — the
+  old scene-frame motion_anchors.npz is STALE for the agent-frame head.
+
+Run: train_v3.py --planning --planning_only --with_map --anchor_cache <new.npz>
+REMAINING simplifications: anchor+offset (not anchor-query+cumsum-delta), single
+interaction layer, GT-map (not online-mapped), collision loss vs ego-status.
+
+
+================================================================================
+EGO-MAP ROUTING (2026-06-25): map attention into the ego planner — NEUTRAL on mini.
+================================================================================
+
+Added a map cross-attention to EgoPlanner (ego query → agent cross → MAP cross →
+heads); map tokens computed once in v3.forward and shared by AgentMotionHead +
+EgoPlanner. Gradient verified (ego.map_cross grad ~629).
+
+RESULT (mini_val, --planning_only --with_map, agent-frame anchors):
+  planning L2@1/2/3s: agents-only-map 1.96/3.34/4.20  →  +ego-map 1.75/3.74/5.35
+  collision@1s: 0.00 → 0.025 ; motion minADE 0.492→0.495 (agent head unchanged).
+  i.e. L2@1s slightly better, 2s/3s WORSE, small collision appears — NET neutral/
+  slightly negative. Train total loss noisier/higher (8.8 vs 6.7).
+
+DIAGNOSIS: the ego planner is data-starved (~320 train frames, 81 ego eval
+samples); extra cross-attn capacity overfits rather than generalises. Mechanism
+is correct (it's what SparseDrive does) — the gain should appear with more data
+(full nuScenes / Bench2Drive CARLA). KEEP the agents-only-map checkpoint
+(train_v3_plan3) as the better planner for the validator/agent; ego-map is wired
+and available (--with_map builds it) but off-by-default-better on mini.

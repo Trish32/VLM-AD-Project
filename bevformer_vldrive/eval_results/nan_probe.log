@@ -1,0 +1,43 @@
+[INFO] --force-cpu: overriding device to CPU
+[INFO] device : cpu
+[ckpt] mapped   : 592 keys from bevformer_tiny_fp16_epoch_24.pth
+[ckpt] missing  : 0 model keys (random init)
+[INFO] model moved to CPU
+[INFO] model  : 32.8 M params
+[INFO] NaN probe active — will report first module to produce NaN/Inf
+[INFO] all mini samples : 404  (mini_val subset: 81)
+[INFO] frame limit : 1 total frames
+
+[INFO] running inference on all mini scenes...
+  scene-0061 | frame   1 | 2757.7 ms | 273 dets | ca9a282c
+
+[INFO] processed 1 frames  (partial run — 1-frame limit), avg 2757.7 ms/frame
+
+============================================================
+BEV Occupancy mIoU  (50×50 grid, 2.048 m/cell)  — 1 processed frames
+============================================================
+
+  car                      : 0.1489  ████
+  truck                    : 0.2432  ███████
+  construction_vehicle     :  N/A     N/A
+  bus                      : 0.0000  
+  trailer                  :  N/A     N/A
+  barrier                  : 0.2075  ██████
+  motorcycle               :  N/A     N/A
+  bicycle                  :  N/A     N/A
+  pedestrian               : 0.0775  ██
+  traffic_cone             : 0.2000  ██████
+
+  mIoU  : 0.1462
+
+[INFO] Skipping NuScenesEval — partial run (1/404 tokens). Re-run without --max-total-frames for full mAP.
+
+============================================================
+Summary
+============================================================
+  [NuScenesEval]  skipped (partial run)
+  mIoU (BEV, 1 processed frames) : 0.1462
+  Avg latency : 2757.7 ms/frame  (0.4 FPS)
+  Device      : cpu  |  frames processed: 1
+
+[INFO] summary saved → eval_results/nan_probe/summary.json

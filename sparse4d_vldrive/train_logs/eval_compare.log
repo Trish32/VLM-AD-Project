@@ -1,0 +1,201 @@
+[watch] waiting for training to complete... Wed Jun 17 17:55:59 PDT 2026
+[watch] training finished, starting eval Wed Jun 17 19:39:02 PDT 2026
+
+########## EVAL: v2 BASELINE (pretrained) ##########
+
+  0%|          | 0/81 [00:00<?, ?it/s]
+                                      
+
+[Sparse4D eval] version=v2  eval_set=mini_val
+[ckpt] sparse4d_vl/model/checkpoints/sparse4dv2_r50_HInf_256x704.pth
+       mapped=920  missing=14  unexpected=0
+       (missing keys expected for unshared/optional modules)
+       device=mps  params=42,097,112
+
+[1/2] Running inference...
+  Inference: 404 frames in 111.5s  (3.6 fps)
+       samples with detections: 404/404
+
+[2/2] Running NuScenesEval...
+mAP: 0.4383
+mATE: 0.5778
+mASE: 0.4474
+mAOE: 0.6175
+mAVE: 0.4128
+mAAE: 0.5510
+NDS: 0.4585
+Eval time: 1.0s
+
+Per-class results:
+Object Class        	AP    	ATE   	ASE   	AOE   	AVE   	AAE   
+car                 	0.713 	0.373 	0.146 	0.101 	0.118 	0.148 
+truck               	0.626 	0.273 	0.127 	0.043 	0.043 	0.001 
+bus                 	0.674 	0.537 	0.089 	0.078 	0.657 	1.000 
+trailer             	0.000 	1.000 	1.000 	1.000 	1.000 	1.000 
+construction_vehicle	0.000 	1.000 	1.000 	1.000 	1.000 	1.000 
+pedestrian          	0.630 	0.549 	0.250 	0.364 	0.248 	0.762 
+motorcycle          	0.505 	0.497 	0.353 	0.927 	0.044 	0.000 
+bicycle             	0.362 	0.426 	0.201 	1.044 	0.192 	0.497 
+traffic_cone        	0.873 	0.123 	0.308 	nan   	nan   	nan   
+barrier             	0.000 	1.000 	1.000 	1.000 	nan   	nan   
+
+==================================================
+  mAP : 0.4383
+  NDS : 0.4585
+==================================================
+
+Class                         AP
+---------------------------------
+  car                     0.7133
+  truck                   0.6263
+  construction_vehicle    0.0000
+  bus                     0.6743
+  trailer                 0.0000
+  barrier                 0.0000
+  motorcycle              0.5048
+  bicycle                 0.3622
+  pedestrian              0.6296
+  traffic_cone            0.8727
+
+Summary saved to sparse4d_eval_outputs/summary.json
+
+
+########## EVAL: v2 TRAINED (unfrozen+depth) ##########
+Traceback (most recent call last):
+  File "/Users/trish/VLMProjects/sparse4d_vldrive/sparse4d_vl/tools/eval.py", line 378, in <module>
+    main()
+  File "/Users/trish/VLMProjects/sparse4d_vldrive/sparse4d_vl/tools/eval.py", line 335, in main
+    load_checkpoint(model, args.checkpoint, version=args.version)
+  File "/Users/trish/VLMProjects/sparse4d_vldrive/sparse4d_vl/model/checkpoint.py", line 276, in load_checkpoint
+    ckpt = torch.load(path, map_location='cpu')
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/trish/miniforge3/envs/simple_bev_vldrive/lib/python3.12/site-packages/torch/serialization.py", line 1578, in load
+    raise pickle.UnpicklingError(_get_wo_message(str(e))) from None
+_pickle.UnpicklingError: Weights only load failed. This file can still be loaded, to do so you have two options, [1mdo those steps only if you trust the source of the checkpoint[0m. 
+	(1) In PyTorch 2.6, we changed the default value of the `weights_only` argument in `torch.load` from `False` to `True`. Re-running `torch.load` with `weights_only` set to `False` will likely succeed, but it can result in arbitrary code execution. Do it only if you got the file from a trusted source.
+	(2) Alternatively, to load with `weights_only=True` please check the recommended steps in the following error message.
+	WeightsUnpickler error: Unsupported global: GLOBAL numpy._core.multiarray.scalar was not an allowed global by default. Please use `torch.serialization.add_safe_globals([numpy._core.multiarray.scalar])` or the `torch.serialization.safe_globals([numpy._core.multiarray.scalar])` context manager to allowlist this global if you trust this class/function.
+
+Check the documentation of torch.load to learn more about types accepted by default with weights_only https://pytorch.org/docs/stable/generated/torch.load.html.
+
+ERROR conda.cli.main_run:execute(127): `conda run python sparse4d_vl/tools/eval.py --version v2 --checkpoint checkpoints/train_v2/epoch_05.pt --eval-set mini_val` failed. (See above for error)
+[Sparse4D eval] version=v2  eval_set=mini_val
+
+
+########## EVAL: v3 BASELINE (pretrained) ##########
+
+  0%|          | 0/81 [00:00<?, ?it/s]
+                                      
+
+[Sparse4D eval] version=v3  eval_set=mini_val
+[ckpt] sparse4d_vl/model/checkpoints/sparse4dv3_r50.pth
+       mapped=1142  missing=8  unexpected=0
+       (missing keys expected for unshared/optional modules)
+       device=mps  params=51,924,260
+
+[1/2] Running inference...
+  Inference: 404 frames in 113.8s  (3.5 fps)
+       samples with detections: 404/404
+
+[2/2] Running NuScenesEval...
+mAP: 0.4630
+mATE: 0.5462
+mASE: 0.4543
+mAOE: 0.5701
+mAVE: 0.4022
+mAAE: 0.5441
+NDS: 0.4798
+Eval time: 0.9s
+
+Per-class results:
+Object Class        	AP    	ATE   	ASE   	AOE   	AVE   	AAE   
+car                 	0.738 	0.314 	0.150 	0.069 	0.094 	0.126 
+truck               	0.707 	0.198 	0.155 	0.086 	0.051 	0.001 
+bus                 	0.699 	0.556 	0.117 	0.079 	0.501 	1.000 
+trailer             	0.000 	1.000 	1.000 	1.000 	1.000 	1.000 
+construction_vehicle	0.000 	1.000 	1.000 	1.000 	1.000 	1.000 
+pedestrian          	0.655 	0.445 	0.265 	0.337 	0.218 	0.762 
+motorcycle          	0.683 	0.362 	0.295 	0.967 	0.055 	0.000 
+bicycle             	0.331 	0.466 	0.218 	0.593 	0.300 	0.464 
+traffic_cone        	0.819 	0.122 	0.343 	nan   	nan   	nan   
+barrier             	0.000 	1.000 	1.000 	1.000 	nan   	nan   
+
+==================================================
+  mAP : 0.4630
+  NDS : 0.4798
+==================================================
+
+Class                         AP
+---------------------------------
+  car                     0.7377
+  truck                   0.7066
+  construction_vehicle    0.0000
+  bus                     0.6987
+  trailer                 0.0000
+  barrier                 0.0000
+  motorcycle              0.6833
+  bicycle                 0.3307
+  pedestrian              0.6547
+  traffic_cone            0.8187
+
+Summary saved to sparse4d_eval_outputs/summary.json
+
+
+########## EVAL: v3 TRAINED (+ DN) ##########
+
+  0%|          | 0/81 [00:00<?, ?it/s]
+                                      
+
+[Sparse4D eval] version=v3  eval_set=mini_val
+[ckpt] checkpoints/finetune_v3_dn/epoch_05.pt  (finetuned checkpoint, epoch=5  loss=0.8104)
+       device=mps  params=51,924,260
+
+[1/2] Running inference...
+  Inference: 404 frames in 117.1s  (3.4 fps)
+       samples with detections: 404/404
+
+[2/2] Running NuScenesEval...
+mAP: 0.3542
+mATE: 0.5974
+mASE: 0.4533
+mAOE: 0.5648
+mAVE: 0.4438
+mAAE: 0.5527
+NDS: 0.4159
+Eval time: 1.5s
+
+Per-class results:
+Object Class        	AP    	ATE   	ASE   	AOE   	AVE   	AAE   
+car                 	0.541 	0.345 	0.150 	0.063 	0.108 	0.108 
+truck               	0.638 	0.228 	0.147 	0.047 	0.062 	0.003 
+bus                 	0.501 	0.830 	0.142 	0.067 	0.693 	1.000 
+trailer             	0.000 	1.000 	1.000 	1.000 	1.000 	1.000 
+construction_vehicle	0.000 	1.000 	1.000 	1.000 	1.000 	1.000 
+pedestrian          	0.474 	0.536 	0.239 	0.394 	0.265 	0.720 
+motorcycle          	0.460 	0.479 	0.328 	0.765 	0.077 	0.000 
+bicycle             	0.244 	0.395 	0.172 	0.748 	0.346 	0.591 
+traffic_cone        	0.684 	0.161 	0.355 	nan   	nan   	nan   
+barrier             	0.000 	1.000 	1.000 	1.000 	nan   	nan   
+
+==================================================
+  mAP : 0.3542
+  NDS : 0.4159
+==================================================
+
+Class                         AP
+---------------------------------
+  car                     0.5407
+  truck                   0.6384
+  construction_vehicle    0.0000
+  bus                     0.5006
+  trailer                 0.0000
+  barrier                 0.0000
+  motorcycle              0.4603
+  bicycle                 0.2440
+  pedestrian              0.4740
+  traffic_cone            0.6837
+
+Summary saved to sparse4d_eval_outputs/summary.json
+
+
+[watch] ALL EVALS DONE Wed Jun 17 19:45:07 PDT 2026

@@ -1,0 +1,20 @@
+{
+  "device": "cpu",
+  "frames_processed": 5,
+  "partial_run": true,
+  "mIoU_bev": 0.0,
+  "per_class_mIoU": {
+    "car": 0.0,
+    "truck": 0.0,
+    "construction_vehicle": 0.0,
+    "bus": 0.0,
+    "trailer": null,
+    "barrier": 0.0,
+    "motorcycle": 0.0,
+    "bicycle": 0.0,
+    "pedestrian": 0.0,
+    "traffic_cone": 0.0,
+    "mIoU": 0.0
+  },
+  "avg_latency_ms": 642.1248663682491
+}

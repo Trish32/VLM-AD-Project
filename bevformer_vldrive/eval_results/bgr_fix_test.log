@@ -1,0 +1,46 @@
+[INFO] --force-cpu: overriding device to CPU
+[INFO] device : cpu
+[ckpt] mapped   : 592 keys from bevformer_tiny_fp16_epoch_24.pth
+[ckpt] missing  : 0 model keys (random init)
+[INFO] model moved to CPU
+[INFO] model  : 32.8 M params
+[INFO] all mini samples : 404  (mini_val subset: 81)
+[INFO] frame limit : 5 total frames
+
+[INFO] running inference on all mini scenes...
+  scene-0061 | frame   1 |  706.2 ms |   4 dets | ca9a282c
+  scene-0061 | frame   2 |  666.1 ms |   0 dets | 39586f9d
+  scene-0061 | frame   3 |  657.5 ms |   0 dets | 356d81f3
+  scene-0061 | frame   4 |  627.7 ms |   0 dets | e0845f53
+  scene-0061 | frame   5 |  651.8 ms |   0 dets | c923fe08
+
+[INFO] processed 5 frames  (partial run — 5-frame limit), avg 661.9 ms/frame
+
+============================================================
+BEV Occupancy mIoU  (50×50 grid, 2.048 m/cell)  — 5 processed frames
+============================================================
+
+  car                      : 0.0000  
+  truck                    : 0.0000  
+  construction_vehicle     : 0.0000  
+  bus                      : 0.0000  
+  trailer                  :  N/A     N/A
+  barrier                  : 0.0000  
+  motorcycle               : 0.0000  
+  bicycle                  : 0.0000  
+  pedestrian               : 0.0000  
+  traffic_cone             : 0.0000  
+
+  mIoU  : 0.0000
+
+[INFO] Skipping NuScenesEval — partial run (5/404 tokens). Re-run without --max-total-frames for full mAP.
+
+============================================================
+Summary
+============================================================
+  [NuScenesEval]  skipped (partial run)
+  mIoU (BEV, 5 processed frames) : 0.0000
+  Avg latency : 661.9 ms/frame  (1.5 FPS)
+  Device      : cpu  |  frames processed: 5
+
+[INFO] summary saved → eval_results/bgr_fix_test/summary.json

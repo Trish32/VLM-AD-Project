@@ -1,0 +1,23 @@
+Phase 1: Tracing the Spatial Cross-Attention (3D-to-2D Lifting Matrix)
+The core concept behind BEVFormer is predefined grid queries interacting with multi-camera feature maps using camera projection matrices.
+Claude, let's analyze the Spatial Cross-Attention (SCA) logic in our local files (specifically `sca.py` or the encoder head). Please walk me through the code line-by-line to explain:
+1. How the 3D reference points are generated for the 50x50 BEV grid across different height levels.
+2. How the camera intrinsic and extrinsic matrices are applied to project these points onto the 2D pixel coordinates.
+3. Show me exactly where `torch.nn.functional.grid_sample` bilinearly extracts features from the ResNet-50 outputs, and how it manages points that project outside a camera's current Field of View (FOV).
+Please highlight the exact tensor shape transformations at each line.
+
+Phase 2: Auditing the Temporal Self-Attention Query Warping
+The temporal block distinguishes BEVFormer from static networks. It aligns the history query matrix with the current ego frame before computing multi-head attention.
+Claude, let's look at the temporal logic inside `tsa.py`. I want to audit how ego-motion is compensated in the tensor space. Guide me through the function that offsets the queries:
+1. Explain how the ego-velocity, yaw rate, and timestamp changes ($\Delta t$) are used to compute the coordinate translation/rotation.
+2. Show me how the previous frame's BEV queries are warped or shifted to realign with the current ego position.
+3. Walk me through the `torch.nn.MultiheadAttention` layer where the current queries and the warped historical queries are fused. What is the query ($Q$), key ($K$), and value ($V$) configuration here?
+
+Phase 3: Tensor Debugging & Fixed Dimensions Map
+To ensure your code matches the expected architecture profile
+Claude, create a Markdown table mapping the exact tensor shape transformations across our entire inference pipeline (`vis_infer.py`). Trace a single sample from input to the final VLM payload:
+- Raw Multi-view Input (Shape?)
+- ResNet-50 Feature Map Outputs (Shape?)
+- Post-Spatial Attention BEV Embedding (Shape?)
+- Full-colour RGB BEV (Shape?)
+- Final Image Tensor passed to Ollama Qwen2.5-VL

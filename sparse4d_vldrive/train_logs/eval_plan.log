@@ -1,0 +1,16 @@
+[watch] training done, eval Wed Jun 24 19:54:37 PDT 2026
+[ckpt] checkpoints/train_v3_plan/epoch_05.pt  (finetuned checkpoint, epoch=5  loss=11.0205)
+[eval] motion+planning on mini_val
+
+====================================================
+  MOTION (agents, n=4226)
+    minADE       : 0.7331
+    minFDE       : 1.2135
+    brier-minFDE : 1.4205
+    miss-rate    : 0.1569
+  PLANNING (ego, n=81)
+    L2  @1s/2s/3s: 1.607 / 3.069 / 4.343
+    col @1s/2s/3s: 0.000 / 0.000 / 0.000
+====================================================
+
+[watch] EVAL DONE Wed Jun 24 19:57:51 PDT 2026

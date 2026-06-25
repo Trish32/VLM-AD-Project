@@ -1,0 +1,160 @@
+1. Camera Coordinates
+Origin at the camera optical center.
+        Z (depth, forward into scene)
+       /
+      /
+     +--------> X (right)
+     |
+     |
+     v Y (down)
++X → right in image
++Y → down in image
++Z → depth (away from camera)
+
+Projection: 3D point → pixel
+        A 3D point in camera space: P_cam = [x, y, z]
+        Projects to pixel (u, v) via intrinsic matrix K:
+        [u]   [fx  0  cx] [x/z]  u = fx * (x/z) + cx 
+        [v] = [ 0 fy  cy] [y/z]  v = fy * (y/z) + cy
+        [1]   [ 0  0   1] [ 1 ]
+        fx: horizontal focal length
+        fy: vertical focal length
+        The principal point (cx, cy) is where the optical axis pierces the image plane — ideally the exact center of the sensor.
+        cx: principal point x  (cx shifts the origin from sensor-corner(0,0) to optical axis)
+        cy: principal point Y
+
+        sensor corner (0,0)
+        +---------------------------+
+        |                           |
+        |         * (cx, cy)        |  ← optical axis hits here
+        |         |                 |
+        |         | ≈ width/2       |
+        +---------------------------+
+        fov_horizontal = np.degrees(2 * np.arctan(cx/fx))
+        fov_horizontal_front = np.degrees(2 * np.arctan(816.3/1266.4)) ≈ 65°
+        fov_horizontal_back = np.degrees(2 * np.arctan(800/809.22)) ≈ 89.3°
+        A longer focal length → narrower FoV → more telephoto.
+Unprojection: pixel → camera ray
+        This is the inverse — what you need when lifting image features into 3D space (the Lift step in Lift-Splat).
+        Rearranging the equations above:
+        X/Z = (u - cx) / fx
+        Y/Z = (v - cy) / fy
+        For pixel (u, v), the unit ray direction in camera space is:
+        d = K_inv @ [u, v, 1]          # unnormalized direction vector
+        d_hat = d / ||d||               # normalize to unit length
+        where K_inv is just:
+        K⁻¹ = [[1/fx,    0,  -cx/fx],
+                [   0, 1/fy,  -cy/fy],
+                [   0,    0,      1 ]]
+        Every pixel along the ray satisfies P_cam = dept * d_hat for some depth dept > 0. 
+        You don't know t from a single image — that's the ambiguity Lift-Splat resolves by predicting a depth distribution and summing features along the ray.
+
+2. Ego Vehicle Coordinates
+Origin at the IMU/sensor rig center, fixed to the car body.
+         X (forward)
+         ^
+         |
+         |
+Y <------+  (z points UP, out of roof)
+(left)
+
+Right-hand rule: Z = X × Y = up
++X → forward (front bumper direction)
++Y → left
++Z → up
+from camera → ego, apply the camera's extrinsic (rotation + translation):
+P_ego = R_cam2ego @ P_cam + t_cam2ego
+nuScenes stores this as sensor2ego_rotation (quaternion) + sensor2ego_translation.
+Example — the front camera sits ~1.5m forward, ~1.5m up from IMU:
+t_cam2ego ≈ [1.52, 0.00, 1.50]  (x_fwd, y_left, z_up)
+
+3. Global Coordinates
+A fixed world frame (UTM-like). Origin is arbitrary per scene.
+         X (East-ish)
+         ^
+         |
+Y <------+
+(North-ish)      Z = up
+Same right-hand convention as ego, but doesn't move with the car.
+from ego → global, apply the ego pose:
+P_global = R_ego2global @ P_ego + t_ego2global
+nuScenes stores this per timestamp in ego_pose: rotation (quaternion) + translation.
+
+camera → global:
+P_cam → [extrinsic]  → P_ego → [ego pose] → P_global
+P_global = T_ego2global @ T_cam2ego @ P_cam_homogeneous
+
+4. BEV (Bird's Eye View) Coordinates
+A 2D top-down projection — just drop the Z (height) axis from ego coordinates.
+        X (forward / up in BEV image)
+        ^
+        |
+        |
+Y <-----+-------
+(left)  ego
+
+BEV image pixel layout:
++------------------+
+|row 0    (forward)|   row 0 = far forward
+|                  |
+|   <-- left       |   col 0 = far left
+|        right --> |
+|row H   (backward)|   row H = far backward
++------------------+
+BEV grid definition — Simple-BEV style:
+xbound = [-50, 50, 0.5]   # meters forward/back, resolution
+ybound = [-50, 50, 0.5]   # meters left/right
+zbound = [-5,  5,  10.0]  # meters up/down (collapsed)
+
+Point P_ego = [x, y, z] maps to BEV pixel:
+col = (y - ybound[0]) / ybound[2]   # left-right
+row = (x - xbound[0]) / xbound[2]   # forward-back (often flipped so forward=top)
+
+Pipeline:
+3D World (nuScenes annotations)
+        |
+        | ego_pose⁻¹  (global → ego)
+        v
+Ego Vehicle Frame  [X=fwd, Y=left, Z=up]
+        |
+        | sensor2ego⁻¹  (ego → camera)
+        v
+Camera Frame  [X=right, Y=down, Z=depth]
+        |
+        | intrinsic K  (project)
+        v
+Image Pixels  (u, v)
+
+        ↕  (for BEV construction)
+
+Ego Vehicle Frame
+        |
+        | drop Z, discretize XY
+        v
+BEV Grid  (top-down feature map)
+
+Say a pedestrian is 20m ahead, 3m to the left, at ground level in ego frame:
+        Global Coordinates: depends on car's GPS pose at that timestamp
+        Ego Coordinates: [20.0, 3.0, 0.0]
+        Camera (front cam, approx) Coordinates: [−3.0, −1.5, 18.5] 
+                The front camera's image is 1600 × 900 px
+                Projection:
+                        Projects to pixel (u, v) via intrinsic matrix K:
+                        K = [[1266.4,    0.0,  816.3],
+                                [   0.0, 1266.4,  491.5],
+                                [   0.0,    0.0,    1.0]]
+                        u = 1266.4 * (-3.0 / 18.5) + 816.3 = -205.36 + 816.3 = 610.94 px
+                        v = 1266.4 * (-1.5 / 18.5) + 491.5 = -102.68 + 491.5 = 388.82 px
+                        The pedestrian lands near pixel (611, 389) — left of center, slightly above the horizon.
+                Unprojection:
+                        Projects to camera (x, y, z) via K_inv:
+                        d = K⁻¹ @ [610.94, 388.82, 1]
+                        = [(610.94 - 816.3)/1266.4,  (388.82 - 491.5)/1266.4,  1]
+                        = [-0.162,  -0.081,  1.0]     # ← the direction in camera space
+                        ||d|| = np.linalg.norm(np.array([-0.162,  -0.081,  1.0])) = 1.016
+                        Normalize: d-hat = d / ||d|| = [-0.15944882, -0.07972441,  0.98425197]
+                        At depth dept = 18.5m: np.array([-0.159, -0.080,  0.984])*18.5 = [-2.9415, -1.48  , 18.204 ]
+
+        BEV pixel (0.5m res, origin=-50m) Coordinates: row=140, col=106
+
+Simple-BEV: it lifts image features from all 6 cameras back into ego space using the camera→ego transform chain, then pools them onto the BEV grid.

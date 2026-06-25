@@ -1,0 +1,4 @@
+=== [1/2] train_v2 (unfrozen backbone + depth) START Wed Jun 17 17:30:01 PDT 2026 ===
+=== [1/2] train_v2 DONE Wed Jun 17 18:38:12 PDT 2026 ===
+=== [2/2] train_v3 + DN START Wed Jun 17 18:38:12 PDT 2026 ===
+=== [2/2] train_v3 + DN DONE Wed Jun 17 19:38:06 PDT 2026 ===

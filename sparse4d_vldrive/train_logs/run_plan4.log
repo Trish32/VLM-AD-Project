@@ -1,0 +1,13 @@
+=== train_v3 PLANNING agent-frame + MAP(agents+EGO) START Thu Jun 25 10:52:11 PDT 2026 ===
+=== DONE Thu Jun 25 11:15:22 PDT 2026 ===
+[eval] motion/plan (ego-map routed)
+[eval] with_map=True (auto-detected from checkpoint)
+  MOTION (agents, n=4226)
+    minADE       : 0.4950
+    minFDE       : 0.8922
+    brier-minFDE : 0.9820
+    miss-rate    : 0.1131
+  PLANNING (ego, n=81)
+    L2  @1s/2s/3s: 1.746 / 3.735 / 5.348
+    col @1s/2s/3s: 0.025 / 0.000 / 0.000
+=== ALL DONE Thu Jun 25 11:16:08 PDT 2026 ===

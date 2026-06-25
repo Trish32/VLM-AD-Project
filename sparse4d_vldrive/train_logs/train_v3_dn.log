@@ -1,0 +1,182 @@
+[init] Device: mps
+[init] Loading nuScenes mini from /Users/trish/Downloads/nuScenes_miniV1.0 ...
+[init] Dataset: 404 keyframes across 10 scenes
+[ckpt] sparse4d_vl/model/checkpoints/sparse4dv3_r50.pth
+       mapped=1142  missing=8  unexpected=0
+       (missing keys expected for unshared/optional modules)
+[init] Checkpoint loaded: sparse4d_vl/model/checkpoints/sparse4dv3_r50.pth
+[init] Params — total: 51.9M  trainable (head): 25.1M  frozen (backbone): 26.9M
+[init] Temporal Instance Denoising ON — 5 groups
+
+[train] Starting fine-tuning for 6 epochs (2424 total steps)
+
+============================================================
+Epoch 00 / 5
+============================================================
+  epoch 00 | step 00020 | loss 1.1137 | lr 9.90e-07 | 0.46 fr/s  MPS 0.58 GB
+  epoch 00 | step 00040 | loss 1.2115 | lr 1.98e-06 | 0.48 fr/s  MPS 0.59 GB
+  epoch 00 | step 00060 | loss 1.4591 | lr 2.97e-06 | 0.50 fr/s  MPS 0.57 GB
+  epoch 00 | step 00080 | loss 2.0261 | lr 3.96e-06 | 0.51 fr/s  MPS 0.57 GB
+  epoch 00 | step 00100 | loss 1.9017 | lr 4.95e-06 | 0.53 fr/s  MPS 0.57 GB
+  epoch 00 | step 00120 | loss 1.3352 | lr 5.94e-06 | 0.56 fr/s  MPS 0.57 GB
+  epoch 00 | step 00140 | loss 1.0004 | lr 6.93e-06 | 0.57 fr/s  MPS 0.57 GB
+  epoch 00 | step 00160 | loss 0.7628 | lr 7.92e-06 | 0.57 fr/s  MPS 0.57 GB
+  epoch 00 | step 00180 | loss 0.9184 | lr 8.91e-06 | 0.57 fr/s  MPS 0.60 GB
+  epoch 00 | step 00200 | loss 0.8406 | lr 9.90e-06 | 0.58 fr/s  MPS 0.59 GB
+  epoch 00 | step 00220 | loss 1.2434 | lr 1.00e-05 | 0.58 fr/s  MPS 0.60 GB
+  epoch 00 | step 00240 | loss 1.4290 | lr 9.99e-06 | 0.59 fr/s  MPS 0.59 GB
+  epoch 00 | step 00260 | loss 0.8895 | lr 9.98e-06 | 0.58 fr/s  MPS 0.58 GB
+  epoch 00 | step 00280 | loss 0.8594 | lr 9.97e-06 | 0.58 fr/s  MPS 0.57 GB
+  epoch 00 | step 00300 | loss 1.2436 | lr 9.95e-06 | 0.59 fr/s  MPS 0.60 GB
+  epoch 00 | step 00320 | loss 1.1333 | lr 9.93e-06 | 0.59 fr/s  MPS 0.57 GB
+  epoch 00 | step 00340 | loss 0.8585 | lr 9.91e-06 | 0.60 fr/s  MPS 0.58 GB
+  epoch 00 | step 00360 | loss 0.9052 | lr 9.88e-06 | 0.60 fr/s  MPS 0.60 GB
+  epoch 00 | step 00380 | loss 0.9842 | lr 9.84e-06 | 0.60 fr/s  MPS 0.60 GB
+  epoch 00 | step 00400 | loss 0.9568 | lr 9.81e-06 | 0.61 fr/s  MPS 0.60 GB
+
+[epoch 00] mean_loss = 1.1472
+
+[ckpt] Saved → checkpoints/finetune_v3_dn/epoch_00.pt
+============================================================
+Epoch 01 / 5
+============================================================
+  epoch 01 | step 00420 | loss 0.9028 | lr 9.76e-06 | 0.50 fr/s  MPS 0.58 GB
+  epoch 01 | step 00440 | loss 0.8732 | lr 9.72e-06 | 0.50 fr/s  MPS 0.58 GB
+  epoch 01 | step 00460 | loss 0.8966 | lr 9.67e-06 | 0.55 fr/s  MPS 0.57 GB
+  epoch 01 | step 00480 | loss 0.9690 | lr 9.62e-06 | 0.57 fr/s  MPS 0.57 GB
+  epoch 01 | step 00500 | loss 1.2833 | lr 9.56e-06 | 0.59 fr/s  MPS 0.57 GB
+  epoch 01 | step 00520 | loss 0.9850 | lr 9.50e-06 | 0.61 fr/s  MPS 0.57 GB
+  epoch 01 | step 00540 | loss 0.8742 | lr 9.44e-06 | 0.62 fr/s  MPS 0.57 GB
+  epoch 01 | step 00560 | loss 0.8197 | lr 9.37e-06 | 0.62 fr/s  MPS 0.57 GB
+  epoch 01 | step 00580 | loss 0.8155 | lr 9.30e-06 | 0.63 fr/s  MPS 0.60 GB
+  epoch 01 | step 00600 | loss 0.9679 | lr 9.23e-06 | 0.65 fr/s  MPS 0.60 GB
+  epoch 01 | step 00620 | loss 1.1509 | lr 9.15e-06 | 0.66 fr/s  MPS 0.60 GB
+  epoch 01 | step 00640 | loss 1.2149 | lr 9.07e-06 | 0.67 fr/s  MPS 0.59 GB
+  epoch 01 | step 00660 | loss 0.7477 | lr 8.99e-06 | 0.67 fr/s  MPS 0.58 GB
+  epoch 01 | step 00680 | loss 0.7790 | lr 8.90e-06 | 0.67 fr/s  MPS 0.57 GB
+  epoch 01 | step 00700 | loss 0.9961 | lr 8.81e-06 | 0.67 fr/s  MPS 0.60 GB
+  epoch 01 | step 00720 | loss 0.8875 | lr 8.72e-06 | 0.68 fr/s  MPS 0.57 GB
+  epoch 01 | step 00740 | loss 0.7721 | lr 8.62e-06 | 0.68 fr/s  MPS 0.57 GB
+  epoch 01 | step 00760 | loss 0.9652 | lr 8.52e-06 | 0.68 fr/s  MPS 0.57 GB
+  epoch 01 | step 00780 | loss 0.8540 | lr 8.42e-06 | 0.68 fr/s  MPS 0.57 GB
+  epoch 01 | step 00800 | loss 0.8531 | lr 8.32e-06 | 0.69 fr/s  MPS 0.60 GB
+
+[epoch 01] mean_loss = 0.9363
+
+[ckpt] Saved → checkpoints/finetune_v3_dn/epoch_01.pt
+============================================================
+Epoch 02 / 5
+============================================================
+  epoch 02 | step 00820 | loss 0.8332 | lr 8.21e-06 | 0.53 fr/s  MPS 0.57 GB
+  epoch 02 | step 00840 | loss 0.8109 | lr 8.10e-06 | 0.50 fr/s  MPS 0.59 GB
+  epoch 02 | step 00860 | loss 0.7820 | lr 7.99e-06 | 0.54 fr/s  MPS 0.57 GB
+  epoch 02 | step 00880 | loss 0.7301 | lr 7.87e-06 | 0.57 fr/s  MPS 0.57 GB
+  epoch 02 | step 00900 | loss 1.1033 | lr 7.76e-06 | 0.59 fr/s  MPS 0.57 GB
+  epoch 02 | step 00920 | loss 1.0077 | lr 7.64e-06 | 0.61 fr/s  MPS 0.57 GB
+  epoch 02 | step 00940 | loss 0.9712 | lr 7.52e-06 | 0.62 fr/s  MPS 0.57 GB
+  epoch 02 | step 00960 | loss 0.9561 | lr 7.39e-06 | 0.62 fr/s  MPS 0.58 GB
+  epoch 02 | step 00980 | loss 0.8017 | lr 7.27e-06 | 0.63 fr/s  MPS 0.60 GB
+  epoch 02 | step 01000 | loss 0.7256 | lr 7.14e-06 | 0.65 fr/s  MPS 0.60 GB
+  epoch 02 | step 01020 | loss 1.1957 | lr 7.01e-06 | 0.66 fr/s  MPS 0.57 GB
+  epoch 02 | step 01040 | loss 1.0983 | lr 6.88e-06 | 0.67 fr/s  MPS 0.60 GB
+  epoch 02 | step 01060 | loss 0.7402 | lr 6.75e-06 | 0.67 fr/s  MPS 0.58 GB
+  epoch 02 | step 01080 | loss 0.6037 | lr 6.62e-06 | 0.67 fr/s  MPS 0.57 GB
+  epoch 02 | step 01100 | loss 0.9828 | lr 6.48e-06 | 0.67 fr/s  MPS 0.61 GB
+  epoch 02 | step 01120 | loss 0.9532 | lr 6.35e-06 | 0.67 fr/s  MPS 0.57 GB
+  epoch 02 | step 01140 | loss 0.7478 | lr 6.21e-06 | 0.68 fr/s  MPS 0.58 GB
+  epoch 02 | step 01160 | loss 0.7885 | lr 6.07e-06 | 0.67 fr/s  MPS 0.57 GB
+  epoch 02 | step 01180 | loss 0.7769 | lr 5.93e-06 | 0.68 fr/s  MPS 0.60 GB
+  epoch 02 | step 01200 | loss 0.7962 | lr 5.80e-06 | 0.68 fr/s  MPS 0.60 GB
+
+[epoch 02] mean_loss = 0.8706
+
+[ckpt] Saved → checkpoints/finetune_v3_dn/epoch_02.pt
+============================================================
+Epoch 03 / 5
+============================================================
+  epoch 03 | step 01220 | loss 0.8483 | lr 5.66e-06 | 0.54 fr/s  MPS 0.59 GB
+  epoch 03 | step 01240 | loss 0.8061 | lr 5.52e-06 | 0.49 fr/s  MPS 0.59 GB
+  epoch 03 | step 01260 | loss 0.7274 | lr 5.37e-06 | 0.53 fr/s  MPS 0.57 GB
+  epoch 03 | step 01280 | loss 0.7622 | lr 5.23e-06 | 0.57 fr/s  MPS 0.57 GB
+  epoch 03 | step 01300 | loss 1.0390 | lr 5.09e-06 | 0.59 fr/s  MPS 0.57 GB
+  epoch 03 | step 01320 | loss 0.8862 | lr 4.95e-06 | 0.61 fr/s  MPS 0.57 GB
+  epoch 03 | step 01340 | loss 0.9678 | lr 4.81e-06 | 0.62 fr/s  MPS 0.57 GB
+  epoch 03 | step 01360 | loss 0.7595 | lr 4.67e-06 | 0.62 fr/s  MPS 0.58 GB
+  epoch 03 | step 01380 | loss 0.6551 | lr 4.53e-06 | 0.63 fr/s  MPS 0.60 GB
+  epoch 03 | step 01400 | loss 0.6657 | lr 4.39e-06 | 0.65 fr/s  MPS 0.60 GB
+  epoch 03 | step 01420 | loss 1.0625 | lr 4.25e-06 | 0.66 fr/s  MPS 0.60 GB
+  epoch 03 | step 01440 | loss 0.8023 | lr 4.11e-06 | 0.67 fr/s  MPS 0.60 GB
+  epoch 03 | step 01460 | loss 0.7734 | lr 3.97e-06 | 0.67 fr/s  MPS 0.57 GB
+  epoch 03 | step 01480 | loss 0.6590 | lr 3.83e-06 | 0.67 fr/s  MPS 0.57 GB
+  epoch 03 | step 01500 | loss 0.8988 | lr 3.69e-06 | 0.67 fr/s  MPS 0.61 GB
+  epoch 03 | step 01520 | loss 0.8990 | lr 3.56e-06 | 0.68 fr/s  MPS 0.61 GB
+  epoch 03 | step 01540 | loss 0.7421 | lr 3.42e-06 | 0.68 fr/s  MPS 0.57 GB
+  epoch 03 | step 01560 | loss 0.8456 | lr 3.29e-06 | 0.68 fr/s  MPS 0.57 GB
+  epoch 03 | step 01580 | loss 0.7246 | lr 3.16e-06 | 0.68 fr/s  MPS 0.57 GB
+  epoch 03 | step 01600 | loss 0.7893 | lr 3.03e-06 | 0.69 fr/s  MPS 0.60 GB
+
+[epoch 03] mean_loss = 0.8321
+
+[ckpt] Saved → checkpoints/finetune_v3_dn/epoch_03.pt
+============================================================
+Epoch 04 / 5
+============================================================
+  epoch 04 | step 01620 | loss 0.8616 | lr 2.90e-06 | 0.55 fr/s  MPS 0.58 GB
+  epoch 04 | step 01640 | loss 0.7936 | lr 2.77e-06 | 0.49 fr/s  MPS 0.58 GB
+  epoch 04 | step 01660 | loss 0.8696 | lr 2.64e-06 | 0.53 fr/s  MPS 0.57 GB
+  epoch 04 | step 01680 | loss 0.7898 | lr 2.52e-06 | 0.57 fr/s  MPS 0.58 GB
+  epoch 04 | step 01700 | loss 1.0040 | lr 2.40e-06 | 0.59 fr/s  MPS 0.57 GB
+  epoch 04 | step 01720 | loss 0.9737 | lr 2.28e-06 | 0.61 fr/s  MPS 0.57 GB
+  epoch 04 | step 01740 | loss 0.8973 | lr 2.16e-06 | 0.62 fr/s  MPS 0.57 GB
+  epoch 04 | step 01760 | loss 0.7712 | lr 2.05e-06 | 0.62 fr/s  MPS 0.58 GB
+  epoch 04 | step 01780 | loss 0.6744 | lr 1.93e-06 | 0.63 fr/s  MPS 0.59 GB
+  epoch 04 | step 01800 | loss 0.8258 | lr 1.82e-06 | 0.64 fr/s  MPS 0.60 GB
+  epoch 04 | step 01820 | loss 1.1073 | lr 1.72e-06 | 0.66 fr/s  MPS 0.61 GB
+  epoch 04 | step 01840 | loss 1.0806 | lr 1.61e-06 | 0.67 fr/s  MPS 0.60 GB
+  epoch 04 | step 01860 | loss 0.7328 | lr 1.51e-06 | 0.67 fr/s  MPS 0.57 GB
+  epoch 04 | step 01880 | loss 0.6964 | lr 1.41e-06 | 0.67 fr/s  MPS 0.58 GB
+  epoch 04 | step 01900 | loss 0.6895 | lr 1.31e-06 | 0.67 fr/s  MPS 0.58 GB
+  epoch 04 | step 01920 | loss 1.1589 | lr 1.22e-06 | 0.68 fr/s  MPS 0.60 GB
+  epoch 04 | step 01940 | loss 1.0045 | lr 1.13e-06 | 0.68 fr/s  MPS 0.60 GB
+  epoch 04 | step 01960 | loss 0.7690 | lr 1.04e-06 | 0.68 fr/s  MPS 0.57 GB
+  epoch 04 | step 01980 | loss 0.8994 | lr 9.53e-07 | 0.68 fr/s  MPS 0.60 GB
+  epoch 04 | step 02000 | loss 0.7079 | lr 8.72e-07 | 0.69 fr/s  MPS 0.60 GB
+  epoch 04 | step 02020 | loss 0.7260 | lr 7.94e-07 | 0.69 fr/s  MPS 0.60 GB
+
+[epoch 04] mean_loss = 0.8138
+
+[ckpt] Saved → checkpoints/finetune_v3_dn/epoch_04.pt
+============================================================
+Epoch 05 / 5
+============================================================
+  epoch 05 | step 02040 | loss 0.7957 | lr 7.19e-07 | 0.53 fr/s  MPS 0.58 GB
+  epoch 05 | step 02060 | loss 0.9401 | lr 6.48e-07 | 0.54 fr/s  MPS 0.59 GB
+  epoch 05 | step 02080 | loss 0.7884 | lr 5.80e-07 | 0.58 fr/s  MPS 0.57 GB
+  epoch 05 | step 02100 | loss 1.2246 | lr 5.16e-07 | 0.60 fr/s  MPS 0.57 GB
+  epoch 05 | step 02120 | loss 1.0027 | lr 4.55e-07 | 0.62 fr/s  MPS 0.57 GB
+  epoch 05 | step 02140 | loss 0.8427 | lr 3.98e-07 | 0.64 fr/s  MPS 0.57 GB
+  epoch 05 | step 02160 | loss 0.6319 | lr 3.44e-07 | 0.64 fr/s  MPS 0.57 GB
+  epoch 05 | step 02180 | loss 0.6463 | lr 2.95e-07 | 0.64 fr/s  MPS 0.57 GB
+  epoch 05 | step 02200 | loss 0.8041 | lr 2.49e-07 | 0.66 fr/s  MPS 0.60 GB
+  epoch 05 | step 02220 | loss 0.5924 | lr 2.07e-07 | 0.67 fr/s  MPS 0.59 GB
+  epoch 05 | step 02240 | loss 0.9470 | lr 1.68e-07 | 0.68 fr/s  MPS 0.60 GB
+  epoch 05 | step 02260 | loss 1.0150 | lr 1.34e-07 | 0.69 fr/s  MPS 0.59 GB
+  epoch 05 | step 02280 | loss 0.7168 | lr 1.03e-07 | 0.69 fr/s  MPS 0.58 GB
+  epoch 05 | step 02300 | loss 0.6185 | lr 7.66e-08 | 0.69 fr/s  MPS 0.57 GB
+  epoch 05 | step 02320 | loss 1.0452 | lr 5.40e-08 | 0.69 fr/s  MPS 0.60 GB
+  epoch 05 | step 02340 | loss 0.8887 | lr 3.52e-08 | 0.70 fr/s  MPS 0.57 GB
+  epoch 05 | step 02360 | loss 0.7311 | lr 2.05e-08 | 0.70 fr/s  MPS 0.58 GB
+  epoch 05 | step 02380 | loss 0.8147 | lr 9.67e-09 | 0.70 fr/s  MPS 0.60 GB
+  epoch 05 | step 02400 | loss 0.7425 | lr 2.88e-09 | 0.70 fr/s  MPS 0.60 GB
+  epoch 05 | step 02420 | loss 0.8093 | lr 7.99e-11 | 0.71 fr/s  MPS 0.60 GB
+
+[epoch 05] mean_loss = 0.8104
+
+[ckpt] Saved → checkpoints/finetune_v3_dn/epoch_05.pt
+
+[done] Fine-tuning complete.
+       Checkpoints saved in: checkpoints/finetune_v3_dn
+/Users/trish/miniforge3/envs/simple_bev_vldrive/lib/python3.12/site-packages/torch/autograd/graph.py:882: UserWarning: The operator 'aten::grid_sampler_2d_backward' is not currently supported on the MPS backend and will fall back to run on the CPU. This may have performance implications. (Triggered internally at /Users/runner/work/pytorch/pytorch/aten/src/ATen/mps/MPSFallback.mm:34.)
+  return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+
+

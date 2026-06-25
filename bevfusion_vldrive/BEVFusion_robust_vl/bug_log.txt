@@ -1,0 +1,90 @@
+BEVFusion-PP (bevf_pp_2x8_1x_nusc) pure-PyTorch MPS port — root-cause log
+=========================================================================
+Reproduced 2026-06-13.  RESULT: mini_val mAP 0.4675 / NDS 0.4952.
+Official full-val: mAP 53.5 / NDS 60.4.  All checkpoint keys load with
+ZERO missing / ZERO unexpected.  Per-class AP on the 7 classes actually
+present in mini_val averages 0.668 (see note 8).
+
+Reference repo: /Users/trish/VLMProjects/bevfusion_vldrive/BEVFusion
+  (ADLab-AutoDrive BEVFusion, NeurIPS 2022; mmdet3d-based).
+Port:           /Users/trish/VLMProjects/bevfusion_vldrive/BEVFusion_vl
+Run env:        conda run -n simple_bev_vldrive  (torch 2.12, MPS)
+Reference env:  uniad2.0 (mmcv 1.6.1 — INCOMPATIBLE with this repo's
+                mmdet3d which needs <=1.4.0; the official repo will NOT
+                import there as-is. Diff-debugging would need per-module
+                monkeypatching, but was not needed — the faithful port +
+                strict key match + sane eval was sufficient.)
+
+------------------------------------------------------------------
+FINDINGS / GOTCHAS (in rough order of importance)
+------------------------------------------------------------------
+1. The shipped "TF checkpoint" bevf_tf_4x8_6e_nusc.pth is NOT weights.
+   It is a zip of a single 318 MB `bevfusion_test.json` — a nuScenes
+   *test-split detection submission* (predicted boxes). Unusable for
+   inference/finetune. Only bevf_pp_2x8_1x_nusc.pth is a real state_dict
+   (584 tensors). TF deferred.
+
+2. The PointPillars path needs NO sparse conv / spconv. pts_middle_encoder
+   is PointPillarsScatter (parameter-free) + plain SECOND 2D convs. This
+   is why PP is fully portable to MPS while the TF path (SparseEncoder /
+   spconv, CUDA-only) is not.
+
+3. lidar2img stays in ORIGINAL (900x1600) pixel coordinates. The custom
+   MyResize transform only rescales the image + sets scale_factor; it does
+   NOT touch lidar2img. The LSS frustum is built for final_dim=(900,1600)
+   (D=41, fH=112, fW=200), and FPNC's `adp` branch force-resizes every
+   pyramid level to target_size=(final_dim//downsample)=(112,200) via
+   AdaptiveAvgPool/Upsample. So the camera feature is ALWAYS (112,200)
+   regardless of the (448x800) padded input, and the frustum maps original
+   pixels. => build lidar2img with the UNSCALED intrinsic K.
+
+4. Point features fed to the VFE are [x, y, z, dt] (4-dim), NOT xyz+intensity.
+   LoadPointsFromMultiSweeps sets points[:,4]=0 for the keyframe, dt=ts-sweep_ts
+   for each of 10 sweeps (xyz transformed sweep->ref lidar via global), then
+   selects use_dim=[0,1,2,4]. Intensity (dim 3) is DROPPED. HardVFE
+   in_channels=4 -> +cluster3 +voxelcenter3 = 10 decorated channels.
+
+5. FPNC (img_neck) is entirely LINEAR: norm_cfg=None AND act_cfg=None, so
+   lateral/fpn/adp/reduc convs are bare Conv2d(bias=True) with no BN and no
+   activation. Confirmed by the checkpoint (only conv.weight/bias, 28 tensors).
+   num_outs=5 with add_extra_convs=False => 5th pyramid level is a plain
+   maxpool of the 4th (no params).
+
+6. SECONDFPN uses ConvTranspose2d for EVERY level, including stride==1
+   (deconv kernel=1, stride=1) — hence deblocks.0 weight is (64,128,1,1)
+   in (in,out,k,k) layout, not the (out,in) a Conv2d would give. Getting
+   this wrong gives a shape/transpose mismatch on load.
+
+7. EVAL RANGE FILTER must be applied in the EGO frame, not global. First
+   bug: I rotated/translated boxes all the way to global (coords ~1000 m)
+   then filtered radius>class_range — everything dropped, dets=0 for all
+   frames. Fix: lidar->ego, filter radius in ego frame, THEN ego->global
+   (matches mmdet3d lidar_nusc_box_to_global). After fix, dets reappear.
+
+8. mini_val = scenes 0103+0916 (81 samples) barely contains trailer,
+   construction_vehicle, barrier -> those get AP 0.000, dragging mAP down.
+   Same effect seen in Sparse4D-VLDrive. The 7 present classes:
+   car .874 / bus .864 / ped .845 / truck .763 / moto .666 / bike .465 /
+   cone .199 (mean .668). So the 0.4675 mini mAP is expected for a correct
+   checkpoint; it is NOT comparable to the 53.5 full-val number.
+
+9. Box convention for the nuScenes submission: gravity_center z = z_bottom +
+   h/2; size = mmdet3d dims [w,l,h] passed DIRECTLY as nuScenes wlh (no swap,
+   unlike Sparse4D which needed an l/w swap); nusc_yaw = -mmdet_yaw - pi/2;
+   velocity (vx,vy) carried from box[...,7:9]. Anchor head direction
+   correction uses dir_offset=pi/4, dir_limit_offset=0.
+
+10. Anchors: AlignedAnchor3DRangeGenerator, size_per_range (7 ranges x 7
+    sizes paired 1:1) x 2 rotations = 14 base anchors/loc; reshape_out=True;
+    centers shifted by half a voxel (align_corner=False). featmap 200x200 =>
+    560000 anchors. conv_cls 140=14*10, conv_reg 126=14*9, conv_dir 28=14*2.
+
+11. Rotated-BEV NMS reimplemented in pure PyTorch (Sutherland-Hodgman
+    polygon clip for rotated-IoU; greedy). Correct but O(n^2) python — slow
+    on random data (all anchors pass); fine on real (score_thr=0.05 sparse).
+    ~8 s/frame on CPU dominated by NMS + voxelization. Optimize only if needed.
+
+12. naiveSyncBN1d/2d in the config -> plain BatchNorm1d/2d on a single
+    device. BN runs in eval() for inference. Camera stream is frozen
+    (freeze_img=True) -> ran under no_grad in extract_feat so fine-tune
+    trains only the LiDAR stream + fusion (reduc_conv, seblock) + head.

@@ -1,0 +1,19 @@
+[watch] waiting for v3 compare training... Wed Jun 17 23:16:31 PDT 2026
+[watch] training done, evaluating Thu Jun 18 01:54:35 PDT 2026
+
+########## EVAL: v3 BASELINE (pretrained) ##########
+[ckpt] sparse4d_vl/model/checkpoints/sparse4dv3_r50.pth
+  mAP : 0.4630
+  NDS : 0.4798
+
+########## EVAL: v3 FULL (unfrozen+DN+quality+depth) ##########
+[ckpt] checkpoints/train_v3_full/epoch_05.pt  (finetuned checkpoint, epoch=5  loss=3.5123)
+  mAP : 0.3943
+  NDS : 0.4385
+
+########## EVAL: v3 CONTROL (no DN, same recipe) ##########
+[ckpt] checkpoints/train_v3_nodn/epoch_05.pt  (finetuned checkpoint, epoch=5  loss=2.4860)
+  mAP : 0.4526
+  NDS : 0.4756
+
+[watch] ALL V3 EVALS DONE Thu Jun 18 02:00:38 PDT 2026

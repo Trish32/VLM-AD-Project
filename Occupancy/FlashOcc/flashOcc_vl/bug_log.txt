@@ -1,0 +1,159 @@
+FlashOcc-VL — pure-PyTorch / MPS port of FlashOcc (BEVDetOCC, flashocc-r50)
+===========================================================================
+Config reproduced: FlashOCC/projects/configs/flashocc/flashocc-r50.py
+Checkpoint:        flashOcc_vl/model/checkpoints/flashocc-r50-256x704.pth
+                   (official M1, full-val mIoU 32.08; 430 tensors, 44.74M params)
+Env: conda run -n simple_bev_vldrive (torch 2.12, MPS). Set
+     PYTORCH_ENABLE_MPS_FALLBACK=1. nuScenes-mini at
+     /Users/trish/Downloads/nuScenes_miniV1.0.
+
+STATUS
+------
+Checkpoint loads with ZERO missing / ZERO unexpected keys. Inference, eval, and
+fine-tune all verified working on MPS/CPU. mIoU numbers require the Occ3D
+occupancy GT (labels.npz), which is NOT in raw nuScenes-mini — see DATA below.
+
+ARCHITECTURE (single keyframe, 6 cams, 256x704)
+-----------------------------------------------
+ResNet-50 (out_indices 2,3 -> 1024@s16, 2048@s32)
+  -> CustomFPN (in [1024,2048], out 256, out_ids[0], NO norm/act) -> 256@16x44
+  -> LSSViewTransformer (depth_net Conv2d 256->88+64; D=88 depth bins
+       [1,45,0.5]; collapse_z) -> BEV (B,64,200,200)
+  -> CustomResNet BEV backbone (BasicBlock, numC 64->[128,256,512], stride 2,2,2)
+  -> FPN_LSS (in 512+128=640, out 256, up x4 + extra up x2) -> (B,256,200,200)
+  -> BEVOCCHead2D (final_conv 256->256 3x3; predicter Lin256->512 +Softplus
+       +Lin512->288) -> (B,200,200,16,18) class logits
+
+KEY NON-OBVIOUS FACTS
+---------------------
+1. bev_pool_v2 (the only CUDA op) is just a depth-weighted scatter-add:
+     bev[ranks_bev] += depth[ranks_depth] * context_feat[ranks_feat]
+   Reimplemented with Tensor.index_add_ (MPS-OK). No cumsum trick / interval
+   bookkeeping needed (those only matter to the custom kernel). Verified against
+   the official test_bev_pool_v2 case (sum == 4.4 with C=2).
+   File: model/view_transformer.py::LSSViewTransformer.voxel_pooling
+
+2. img_backbone uses torchvision ResNet-50's EXACT key layout (conv1, bn1,
+   layer{1..4}.{i}.conv{1,2,3}, downsample.{0,1}) — so torchvision resnet50()
+   loads the checkpoint directly with no remapping.
+
+3. CustomResNet (BEV encoder) downsample branch is a SINGLE 3x3 conv WITH bias
+   (not 1x1 conv+BN) -> checkpoint keys are layers.{s}.0.downsample.{weight,bias}.
+   BasicBlock naming conv1/bn1/conv2/bn2 matches mmdet.
+
+4. CustomFPN / occ_head ConvModules have NO norm and NO activation here
+   (norm_cfg=act_cfg=None in config) -> wrap a bare Conv2d as `.conv` so keys
+   `<name>.conv.weight/bias` map. FPN top-down add uses NEAREST interpolation.
+
+5. Test-time image preprocessing (PrepareImageInputs test branch):
+   resize = 704/1600 = 0.44 -> (704,396); crop (0,140,704,396) -> 704x256.
+   post_rot = diag(0.44,0.44,1); post_tran = (0,-140,0); bda = I(3).
+
+6. Normalisation reproduces mmcv imnormalize(to_rgb=True) on an already-RGB PIL
+   image: it REVERSES the channel order (cvtColor BGR<->RGB) BEFORE subtracting
+   the ImageNet mean. Must replicate the swap (img[...,::-1]) — the checkpoint
+   was trained with it. File: data/loader.py::mmlab_normalize
+
+7. Geometry (prepare_inputs sensor2keyego, get_ego_coor frustum->BEV) uses 4x4
+   matrix inverses in float64. MPS has NO float64, so all geometry runs on CPU
+   (.cpu().double()) and only the conv stack + index_add scatter run on-device.
+   prepare_inputs maps every cam into camera-0's ego frame:
+     sensor2keyego = inv(ego2global[:,0]) @ ego2global @ sensor2ego
+
+8. Output axis convention: head permute(0,3,2,1) gives (B,Dx,Dy,C); after Dz
+   expansion -> (B,Dx,Dy,Dz=16,18). Matches GT (Dx,Dy,Dz). get_occ = softmax
+   over classes then argmax. Class 17 = 'free'.
+
+BUGS HIT & FIXES (this session)
+-------------------------------
+B1. "Cannot convert a MPS Tensor to float64" — .double() called on an MPS
+    tensor in prepare_inputs / view_transformer. FIX: reorder to .cpu().double()
+    (move off MPS first), do all inverse/geometry on CPU. (Fact #7.)
+
+DATA — Occ3D occupancy GT (needed for eval + fine-tune ONLY)
+------------------------------------------------------------
+Raw nuScenes-mini has NO occupancy labels. Download the 'gts' folder from
+  https://github.com/CVPR2023-3D-Occupancy-Prediction/CVPR2023-3D-Occupancy-Prediction
+  or gdrive (FlashOCC/doc/install.md):
+  https://drive.google.com/file/d/1kiXVNSEi3UrNERPMz_CfiJXKkgts_5dY
+Layout: <occ_root>/scene-XXXX/<sample_token>/labels.npz
+  -> semantics (200,200,16), mask_camera, mask_lidar.
+eval.py / train_finetune.py take --occ-root and resolve labels.npz by
+scene_name/sample_token; if absent they print this hint and exit cleanly.
+scene-0103 = 40 mini samples (the usual mini_val scene).
+
+mIoU "TOO LOW vs official" INVESTIGATION (2026-06-22) — NO BUG
+-------------------------------------------------------------
+Concern: scene-0103 mIoU 23.27 << official 32.08. Root cause = COMPARISON
+ARTIFACT, not a model defect. Evidence:
+- nuScenes-mini's 10 scenes split (nuscenes.utils.splits) into 6 full-TRAIN
+  + 4 full-VAL. Official 32.08 is a full-VAL-only number.
+  full-VAL scenes = 0103, 0553, 0796, 0916.
+- Apples-to-apples (held-out mini-val only): mIoU 29.06 (162 samples) vs
+  official 32.08 — within small-sample variance.
+- full-TRAIN mini scenes score 38.9 (model saw them) > val 29.06. Train>val is
+  the EXPECTED healthy pattern; proves weights do real work.
+- Per-val-scene spread is huge over just 4 scenes: 0103=23.27, 0553=34.73
+  (ABOVE official avg!), 0796=29.44, 0916=18.6. Can't pin the mean better than
+  +-several pts; full val has 150 scenes/6019 samples which averages out.
+- full-mini 35.35 was misleading: it MIXED 6 train scenes (inflate) into the avg.
+Ruled out (A/B / inspection), per prior Sparse4D/BEVFusion bug-log traps:
+- Normalization RGB/BGR: A/B -> BGR-swap (current) 23.27 vs RGB-no-swap 18.05.
+  Swap is CORRECT (mmcv imnormalize to_rgb reverses already-RGB PIL).
+- EMA: ckpt updates=52776; MEGVIIEMAHook saves EMA weights AS state_dict -> we
+  load the right (EMA) weights, 0 missing/0 unexpected.
+- resize/crop/intrinsics + post_rot/post_tran chain verified; orientation OK
+  (driveable_surface 83 rules out x/y transpose/flip).
+CONCLUSION: implementation is faithful; the only lever for a closer number is
+more val data (full nuScenes val), not a code change. Do NOT re-chase this.
+
+
+RAYIOU (added) — surface metric, pure-PyTorch raycaster
+-------------------------------------------------------
+eval.py --metric ray-iou adds the SparseOcc/Occ3D RayIoU alongside mIoU.
+Reimplements ray_metrics.py WITHOUT the CUDA dvr renderer:
+- generate_lidar_rays(): ~15840 fixed (pitch x azimuth) directions.
+- LiDAR ego origins from the devkit (loader.get_lidar_origins) replicate
+  EgoPoseDataset: up to 8 per-scene viewpoints in the ref ego frame, |x|,|y|<39.
+- raycast() (tools/ray_metrics.py): marches each ray in fixed metric steps
+  (default 0.2 m = half voxel), takes the FIRST occupied sample -> (class,
+  distance). Dense-sampling approximation of voxel-DDA; on contiguous surfaces
+  matches DDA well within the 1 m threshold. Runs on MPS (floor/gather/argmax).
+- RayIoU_c = TP/(GT+pred-TP) over rays whose GT hit is non-free; TP needs
+  class match AND |depth_pred-depth_gt| < thr; mean over thr {1,2,4} & 17 cls.
+- scene-0103: RayIoU 14.1 (@1 9.5/@2 14.1/@4 18.6) vs mIoU 23.27. RayIoU is
+  stricter (needs correct surface DEPTH, not just voxel overlap). Telling:
+  driveable_surface mIoU ~87 but RayIoU@1 22.5 -> @4 64 (grazing-angle ground
+  rays are depth-sensitive; mIoU hides this).
+- ~1.4 it/s on MPS (2 volumes x 8 origins x 15840 rays per sample).
+
+COMMANDS
+--------
+infer:    PYTORCH_ENABLE_MPS_FALLBACK=1 conda run -n simple_bev_vldrive \
+            python flashOcc_vl/tools/infer.py --frame 0 --device mps
+eval:     PYTORCH_ENABLE_MPS_FALLBACK=1 conda run -n simple_bev_vldrive \
+            python flashOcc_vl/tools/eval.py --occ-root <gts> --device mps \
+            [--metric miou|ray-iou] [--scene scene-0103] [--limit N]
+finetune: PYTORCH_ENABLE_MPS_FALLBACK=1 conda run -n simple_bev_vldrive \
+            python flashOcc_vl/tools/train_finetune.py --occ-root <gts> --steps 8
+
+VERIFIED — REAL Occ3D GT (downloaded 2026-06-14 to
+/Users/trish/Downloads/Occ3D_nuScenes/gts, 850 scenes, 2.6GB, gdown <id>)
+-------------------------------------------------------------------------
+- infer frame 0: occ (200,200,16), 62.5% occupied, sensible class histogram
+  (driveable_surface/manmade/vegetation/terrain/sidewalk dominate). ~1.2 s/frame.
+- eval full-mini (404/404 GT coverage): mIoU 35.35. Per-class:
+  driveable_surface 83.47, sidewalk 57.95, terrain 55.69, manmade 50.14,
+  bus 47.05, vegetation 43.45, other_flat 40.05, barrier 39.67, car 38.74,
+  truck 38.15, construction_vehicle 33.11, trailer 21.17, pedestrian 15.08,
+  traffic_cone 14.64, motorcycle 13.74, others 4.71, bicycle 4.13.
+  Tracks official per-class pattern; mini > official full-val 32.08 because
+  mini scenes overlap training data. scene-0103 alone = 23.27 (bus/trailer NaN,
+  class imbalance).
+- finetune real GT (20 steps, lr 1e-4): masked-CE loss starts ~0.28 (pretrained
+  already fits true occupancy!) -> trains, saves finetune_flashocc.pth, reloads
+  0/0. 20 noisy single-sample steps mildly degrade weights (expected; smoke test,
+  not a real schedule). Backward through index_add + AdamW + grad-clip(5) OK on MPS.
+
+EARLIER self-test (synthetic GT = model's own argmax, before real download):
+  eval pred==GT -> 100 IoU present / NaN absent; finetune loss 1.67->0.66.

@@ -1,0 +1,34 @@
+
+  0%|          | 0/81 [00:00<?, ?it/s]
+                                      
+
+[Sparse4D track] eval_set=mini_val
+[ckpt] sparse4d_vl/model/checkpoints/sparse4dv3_r50.pth
+       mapped=1142  missing=8  unexpected=0
+       (missing keys expected for unshared/optional modules)
+
+[1/2] inference (with track-ID propagation)...
+  inference: 404 frames
+       unique tracks: 13852
+
+[2/2] TrackingEval (AMOTA)...
+
+==================================================
+  AMOTA : 0.6265
+  AMOTP : 0.7721
+  MOTA  : 0.6314
+  recall: 0.7089
+==================================================
+
+Class              AMOTA
+------------------------
+  bicycle         0.1750
+  bus             1.0000
+  car             0.6689
+  motorcycle      0.6314
+  pedestrian      0.5861
+  trailer            nan
+  truck           0.6977
+
+Saved → sparse4d_track_outputs/track_summary.json
+
