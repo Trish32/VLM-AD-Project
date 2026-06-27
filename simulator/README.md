@@ -14,6 +14,13 @@ reads the model's planned trajectory *and the simulated ego speed*, and we measu
 how far the closed-loop KBM path drifts from the logged human ego path
 (= closed-loop tracking error).
 
+![closed-loop simulator demo](sim_outputs/scene1_sparsedrive.gif)
+
+*SparseDrive-style view: the 6 surround cameras with projected 3-D detections
+(left) and the BEV panel (right) — HD-map lanes, tracked agents + motion
+forecasts, the command-conditioned ego plan (green), the logged ego at the origin
+(grey) and the closed-loop KBM ego (blue).*
+
 ## Files
 
 | file | role |
@@ -23,14 +30,14 @@ how far the closed-loop KBM path drifts from the logged human ego path
 | `bev.py`        | top-down BEV renderer (boxes, motion forecasts, ego plan, sim ego) → PNG + GIF |
 | `simulator.py`  | closed-loop harness + per-frame log + aggregate metrics |
 
-The pipeline itself lives at `/Users/trish/VLMProjects/sparse4d_vldrive/sparse4d_vl`
+The pipeline itself lives at `/VLMProjects/sparse4d_vldrive/sparse4d_vl`
 and is imported, not copied. The best planner checkpoint
 (`checkpoints/train_v3_plan3/epoch_05.pt`, agent-map planner) is used by default.
 
 ## Run
 
 ```bash
-cd /Users/trish/VLMProjects/simulator
+cd /VLMProjects/simulator
 PYTORCH_ENABLE_MPS_FALLBACK=1 conda run -n simple_bev_vldrive \
   python simulator.py --scene 1 --max-frames 40 --bev
 ```
@@ -64,13 +71,6 @@ The closed-loop ego drifts from the logged path (mean ≈ 13 m, final ≈ 25 m o
 while the planner targets ~5–6 m/s, so the KBM ego falls progressively behind.
 This is the documented "lean planner" behaviour, and the simulator surfaces it
 quantitatively. The drift is dominated by longitudinal (speed) error, not lateral.
-
-## Determining a collision from the BEV (frame 08 example)
-Three redundant red cues fire together whenever the metric counts a hit:
-
-1. Red ego rectangle — the predicted KBM ego (normally blue) turns red. At frame 08 it sits ~11 m behind the origin (the planner under-shot speed, so the sim ego lags into where logged traffic was).
-2. Red obstacle box — the specific overlapping box is filled/outlined thick red (#ff3b30), so you see which agent it hit.
-3. Red HUD banner — ** COLLISION x1 ** plus the whole HUD text goes red; the legend has a COLLISION (box ∩ sim ego) entry.
 
 ### Honest limitations
 - **Sensor replay**: cameras are the fixed nuScenes log, so once the ego diverges

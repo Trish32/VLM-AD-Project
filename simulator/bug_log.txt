@@ -1,0 +1,105 @@
+==============================================================================
+ KBM closed-loop simulator — bug log
+==============================================================================
+Bugs found and fixed while adding the HD-map (lane) overlay and debugging the
+"vehicle box / ego plan perpendicular to the forward direction" report.
+Files: simulator/bev.py, simulator/simulator.py
+Pipeline reference: /VLMProjects/sparse4d_vldrive/sparse4d_vl
+
+
+------------------------------------------------------------------------------
+BUG 1 — Vehicle boxes drawn 90° rotated (length vs width swapped)
+------------------------------------------------------------------------------
+Symptom
+    Every detection box was rendered with its long axis perpendicular to the
+    vehicle's heading / motion-forecast line.
+
+Root cause
+    The Sparse4D box is *named* [x, y, z, w, l, h, yaw, vx, vy], but the GT
+    encoder deliberately swaps the size slots:
+        sparse4d_vl/data/finetune_loader.py
+            log_w = np.log(l_dim)   # slot 3 <- length (extent ALONG heading)
+            log_l = np.log(w)       # slot 4 <- width
+    So box[3] is the LENGTH (along yaw) and box[4] is the WIDTH. The renderer and
+    the collision OBB trusted the names and passed box[4] as the length, i.e.
+    drew the width along the heading -> long axis ⟂ to motion.
+
+Evidence (model output, scene 1, moving vehicles)
+    box[3] ≈ 4.5–4.8  (length)   box[4] ≈ 1.85–1.97 (width)
+    yaw  vs  atan2(vy, vx)  agree to within ~1°  -> yaw IS the heading,
+    so the dim along yaw must be box[3].
+
+Fix
+    bev.py        : _box_corners(cx, cy, yaw, length=box[3], width=box[4])
+    simulator.py  : _collision_indices uses (length=box[3], width=box[4]) too
+
+
+------------------------------------------------------------------------------
+BUG 2 — Lidar/ego frame mismatch: agents ~90° rotated from the plan
+------------------------------------------------------------------------------
+Symptom
+    The ego plan (green) and the HD-map lanes ran perpendicular to "forward";
+    the whole agent field was ~90° rotated relative to the planner output. This
+    was the dominant cause of the "perpendicular to forward" report (Bug 1 only
+    rotated each box within an already-rotated frame).
+
+Root cause
+    Perception (boxes, motion forecasts, lanes) is expressed in the LIDAR_TOP
+    frame, but the planner output (ego_traj) and the simulated KBM ego live in
+    the EGO frame. nuScenes mounts LIDAR_TOP ~-90° from the ego:
+        lidar +x = vehicle RIGHT,  lidar +y = vehicle FORWARD
+        (measured: lidar2ego yaw = -90.03°,  ego-forward in lidar = [0, 1, 0])
+    motion_planning.py confirms: "lidar (agents) / ego (planner) frame".
+    bev.py drew both families together assuming one convention (forward = +x),
+    so lidar-frame content landed 90° off from the ego-frame content.
+
+Fix
+    Lift the lidar-frame perception into the ego frame BEFORE rendering so
+    everything shares "forward = +x = up":
+        simulator.py : _lidar2ego(nusc, sample_token) -> (R, t, yaw_off)
+                       _boxes_to_ego(boxes, R, t, yaw_off)  # centre, yaw, vel
+                       _trajs_to_ego(trajs, R)              # forecast displ.
+                       lane polylines: pl @ R.T + t
+    bev.py renders the supplied (ego-frame) data; docstring updated from
+    "lidar +x" to "ego +x" forward.
+
+
+------------------------------------------------------------------------------
+BUG 3 — Collision test mixed frames (spurious / missed hits)
+------------------------------------------------------------------------------
+Symptom
+    Collision count was unstable and unphysical (e.g. 2/10 frames) and changed
+    when Bugs 1–2 were touched.
+
+Root cause
+    _collision_indices OBB-tested lidar-frame boxes against the ego-frame
+    simulated ego (sim_delta). The ~90° frame offset (Bug 2) plus the size swap
+    (Bug 1) made the overlap geometry meaningless.
+
+Fix
+    Boxes are now lifted to the ego frame (Bug 2 fix) before _collision_indices,
+    and the OBB uses the corrected length/width (Bug 1 fix). Both operands are
+    now in the same frame with correct extents; the spurious hits disappear
+    (2/10 -> 0/10 on scene 1, 10 frames).
+
+
+------------------------------------------------------------------------------
+Feature added alongside the fixes (not a bug)
+------------------------------------------------------------------------------
+HD-map lane overlay
+    simulator.py : _lane_polylines() pulls lane_divider + road_divider near the
+                   ego (loader._get_map + global->lidar transform), then lifted
+                   to the ego frame like the boxes.
+    bev.py       : render_frame(map_lines=...) draws them as dashed lane lines
+                   under the agents, with a legend entry. Rendered into the PNGs
+                   and scene*_closedloop.gif.
+
+
+------------------------------------------------------------------------------
+Validation
+------------------------------------------------------------------------------
+After the fixes (scene 1): the ego plan points UP (forward), lanes run along
+forward, vehicles along the ego's road are vertical, cross-traffic boxes are
+horizontal and aligned with their own forecasts — all consistent with
+forward = up. Boxes now agree with two independent references (their motion
+forecasts AND the HD-map lanes), where before they were perpendicular to both.

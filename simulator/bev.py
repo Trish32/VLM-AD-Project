@@ -2,15 +2,17 @@
 Bird's-eye-view (BEV) renderer for the closed-loop KBM simulator.
 ================================================================
 
-Each call to :func:`render_frame` draws ONE top-down frame, in the **log-ego
-frame** (the LIDAR_TOP frame the perception actually ran in). Because we draw in
-that frame, the logged / ground-truth ego sits at the **origin by construction**
-— there is no separate "GT car" floating elsewhere; the origin *is* the GT pose
-for this frame.
+Each call to :func:`render_frame` draws ONE top-down frame, in the **ego frame**
+(x forward, y left). The logged / ground-truth ego sits at the **origin by
+construction** — the origin *is* the GT pose for this frame. The caller lifts the
+lidar-frame perception (boxes, forecasts, lanes) into this ego frame first, so
+the agents, the planner output and the simulated ego all share one convention;
+without that lift they render ~90° apart (LIDAR_TOP is mounted ~-90° from the
+ego, i.e. lidar +x = vehicle right, +y = forward).
 
 Screen convention
 -----------------
-Forward (lidar +x) points UP, left (lidar +y) points LEFT, so an ego-frame point
+Forward (ego +x) points UP, left (ego +y) points LEFT, so an ego-frame point
 ``(x, y)`` maps to screen ``(-y, x)`` (see :func:`_to_screen`). The plot is a
 square window of ``±lim`` metres around the ego.
 
@@ -58,6 +60,8 @@ COLOR_SIM_EGO = "#4c9aff"  # blue outline — predicted closed-loop KBM (simulat
 COLOR_PLAN = "#39d353"     # green — selected ego plan (planner intent)
 COLOR_UNKNOWN = "#888888"  # grey  — a detection with no valid track id
 COLOR_COLLISION = "#ff3b30"  # red — a box overlapping the sim ego, and the ego itself
+COLOR_LANE = "#c8b560"       # muted yellow — HD-map lane / road dividers
+COLOR_ROAD = "#3a3f4b"       # slate — drivable-area boundary (road edge)
 
 _EGO_L, _EGO_W = 4.08, 1.85   # nuScenes-ish car footprint, length × width (m)
 
@@ -100,6 +104,7 @@ def render_frame(out_path: str, *, boxes=None, track_ids=None,
                  trajectories=None, traj_scores=None,
                  ego_plan=None, sim_delta=None, collision_idx=None,
                  divergence=None, speed=None, control=None,
+                 map_lines=None,
                  frame_idx=0, n_tracks=0, lim=40.0, title=""):
     """Render one BEV frame to ``out_path`` (PNG).
 
@@ -118,6 +123,9 @@ def render_frame(out_path: str, *, boxes=None, track_ids=None,
     collision_idx : indices of ``boxes`` overlapping the sim ego. These boxes are
         outlined in RED and the sim ego turns RED, so a collision is unmistakable.
     divergence, speed, control : scalars / Control for the HUD text.
+    map_lines : optional dict {'boundary': [...], 'divider': [...]} of HD-map
+        polylines (each (n, 2)) in this frame's log-ego frame; drawn under the
+        agents as the lane / road context.
     frame_idx, n_tracks, lim, title : cosmetics.
     """
     collision_set = set(int(j) for j in (collision_idx or []))
@@ -127,16 +135,34 @@ def render_frame(out_path: str, *, boxes=None, track_ids=None,
     ax.set_facecolor("#0e0e12")                       # dark background
     ax.grid(True, color="#2a2a33", lw=0.4)            # faint 10 m grid
 
+    # ---- HD-map context: drawn first so everything else sits on top ----
+    # map_lines is a dict {'boundary': [(n,2), ...], 'divider': [(n,2), ...]} of
+    # polylines already expressed in this frame's LIDAR/log-ego frame (metres).
+    if map_lines:
+        for poly in map_lines.get("boundary", []):
+            sp = _to_screen(poly)
+            ax.plot(sp[:, 0], sp[:, 1], "-", color=COLOR_ROAD, lw=2.0, alpha=0.9,
+                    solid_capstyle="round", zorder=0)
+        for poly in map_lines.get("divider", []):
+            sp = _to_screen(poly)
+            ax.plot(sp[:, 0], sp[:, 1], "--", color=COLOR_LANE, lw=1.0, alpha=0.7,
+                    dashes=(4, 3), zorder=1)
+
     # ---- tracked obstacles + their motion forecasts (colour BY TRACK ID) ----
     cmap = plt.colormaps.get_cmap("tab20")
     if boxes is not None and len(boxes) > 0:
         for i, b in enumerate(boxes):
-            # unpack the box: centre (cx, cy), size (w, l) and heading (yaw)
-            cx, cy, _z, w, l, _h, yaw = b[0], b[1], b[2], b[3], b[4], b[5], b[6]
+            # Unpack centre (cx, cy), size and heading (yaw). NOTE the Sparse4D
+            # box format [x,y,z, w, l, h, yaw, ...] is mislabelled: the GT encoder
+            # (finetune_loader) stores slot 3 = length (extent ALONG heading) and
+            # slot 4 = width. So box[3] is the length and must be drawn along yaw;
+            # passing box[4] as the length rotates every box 90° (long axis ⟂ to
+            # its motion) — the bug this fixes.
+            cx, cy, _z, length, width, _h, yaw = b[0], b[1], b[2], b[3], b[4], b[5], b[6]
             tid = int(track_ids[i]) if track_ids is not None else i
             # stable colour per track id; grey if the box has no track
             col = cmap((tid % 20) / 20.0) if tid >= 0 else COLOR_UNKNOWN
-            corners = _box_corners(cx, cy, yaw, l, w)
+            corners = _box_corners(cx, cy, yaw, length, width)
             # a box overlapping the sim ego is outlined thick RED so it stands out
             hit = i in collision_set
             ax.add_patch(Polygon(_to_screen(corners), closed=True,
@@ -188,6 +214,8 @@ def render_frame(out_path: str, *, boxes=None, track_ids=None,
                label="tracked agent + forecast"),
         Line2D([0], [0], color=COLOR_COLLISION, lw=2.2,
                label="COLLISION (box ∩ sim ego)"),
+        Line2D([0], [0], color=COLOR_LANE, lw=1.2, ls="--",
+               label="lane / road divider"),
     ]
     ax.legend(handles=handles, loc="upper right", fontsize=7,
               facecolor="#1b1b22", edgecolor="#2a2a33", labelcolor="white")
@@ -218,15 +246,112 @@ def render_frame(out_path: str, *, boxes=None, track_ids=None,
     plt.close(fig)                                        # free the figure
 
 
-def make_gif(png_paths, gif_path, duration_ms=400):
+def render_world_frame(out_path: str, *, boxes=None, track_ids=None,
+                       gt_ego=None, sim_ego=None, gt_path=None, sim_path=None,
+                       map_lines=None, center=(0.0, 0.0), lim=50.0,
+                       frame_idx=0, divergence=None, title=""):
+    """Render one BEV frame in the **world frame** (global, north-up).
+
+    Unlike :func:`render_frame` (ego-centric, ego at the origin, heading-up), this
+    view keeps the world axes fixed — east → right, north → up — so the ego is
+    seen physically driving through a static map. The closed-loop divergence is
+    the gap between the grey GT path/box and the blue simulated (KBM) path/box.
+
+    All inputs are in a world-local frame (global metres minus a fixed origin):
+      boxes    : (N, >=7) [x, y, z, length, width, h, yaw, ...] in world-local.
+      gt_ego   : (x, y, yaw) logged ego world pose (GREY dashed box).
+      sim_ego  : (x, y, yaw) simulated KBM ego world pose (BLUE box).
+      gt_path  : (k, 2) logged ego trail so far;  sim_path : (k, 2) KBM trail.
+      map_lines: {'divider': [(n,2), ...], ...} HD-map polylines (world-local).
+      center   : (x, y) window centre (m); lim : half-window size (m).
+    """
+    fig, ax = plt.subplots(figsize=(7, 7), dpi=100)
+    ax.set_aspect("equal")
+    cx, cy = center
+    ax.set_xlim(cx - lim, cx + lim); ax.set_ylim(cy - lim, cy + lim)
+    ax.set_facecolor("#0e0e12")
+    ax.grid(True, color="#2a2a33", lw=0.4)
+
+    # In the world frame the screen IS the world (east right, north up) — no
+    # ego-relative rotation — so we plot (x, y) directly.
+    if map_lines:
+        for poly in map_lines.get("divider", []):
+            p = np.asarray(poly)
+            ax.plot(p[:, 0], p[:, 1], "--", color=COLOR_LANE, lw=1.0, alpha=0.7,
+                    dashes=(4, 3), zorder=1)
+
+    cmap = plt.colormaps.get_cmap("tab20")
+    if boxes is not None and len(boxes) > 0:
+        for i, b in enumerate(boxes):
+            cx_b, cy_b, length, width, yaw = b[0], b[1], b[3], b[4], b[6]
+            tid = int(track_ids[i]) if track_ids is not None else i
+            col = cmap((tid % 20) / 20.0) if tid >= 0 else COLOR_UNKNOWN
+            corners = _box_corners(cx_b, cy_b, yaw, length, width)
+            ax.add_patch(Polygon(corners, closed=True, facecolor=col,
+                                 edgecolor="white", alpha=0.55, lw=0.8))
+
+    # ego trails (drawn under the ego boxes)
+    if gt_path is not None and len(gt_path) > 1:
+        gp = np.asarray(gt_path)
+        ax.plot(gp[:, 0], gp[:, 1], "-", color=COLOR_GT_EGO, lw=1.4, alpha=0.9)
+    if sim_path is not None and len(sim_path) > 1:
+        sp = np.asarray(sim_path)
+        ax.plot(sp[:, 0], sp[:, 1], "-", color=COLOR_SIM_EGO, lw=1.6, alpha=0.9)
+
+    # GT (logged) ego box — grey dashed
+    if gt_ego is not None:
+        gx, gy, gyaw = gt_ego
+        ax.add_patch(Polygon(_box_corners(gx, gy, gyaw, _EGO_L, _EGO_W),
+                             closed=True, fill=False, edgecolor=COLOR_GT_EGO,
+                             ls="--", lw=1.4))
+    # simulated KBM ego box — blue + star
+    if sim_ego is not None:
+        sx, sy, syaw = sim_ego
+        ax.add_patch(Polygon(_box_corners(sx, sy, syaw, _EGO_L, _EGO_W),
+                             closed=True, fill=False, edgecolor=COLOR_SIM_EGO, lw=1.9))
+        ax.plot([sx], [sy], marker="*", color=COLOR_SIM_EGO, ms=10)
+
+    handles = [
+        Line2D([0], [0], color=COLOR_GT_EGO, ls="--", lw=1.5, label="GT / log ego + path"),
+        Line2D([0], [0], color=COLOR_SIM_EGO, lw=2.0, marker="*", label="KBM ego + path"),
+        Line2D([0], [0], color="#cccccc", lw=1.5, label="tracked agent"),
+        Line2D([0], [0], color=COLOR_LANE, lw=1.2, ls="--", label="lane / road divider"),
+    ]
+    ax.legend(handles=handles, loc="upper right", fontsize=7,
+              facecolor="#1b1b22", edgecolor="#2a2a33", labelcolor="white")
+
+    lines = [f"frame {frame_idx:02d}  (world frame)"]
+    if divergence is not None:
+        lines.append(f"ego divergence {divergence:4.2f} m")
+    ax.text(cx - lim + 1.5, cy + lim - 2.5, "\n".join(lines),
+            color="white", fontsize=9, va="top", family="monospace")
+
+    if title:
+        ax.set_title(title, color="white", fontsize=10)
+    ax.set_xlabel("← west   (m)   east →", color="#9aa0a6", fontsize=8)
+    ax.set_ylabel("← south  (m)   north →", color="#9aa0a6", fontsize=8)
+    ax.tick_params(colors="#9aa0a6", labelsize=7)
+    fig.tight_layout()
+    fig.savefig(out_path, facecolor="#0e0e12")
+    plt.close(fig)
+
+
+def make_gif(png_paths, gif_path, duration_ms=400, max_height=None):
     """Stitch saved PNG frames into an animated GIF (PIL only, no ffmpeg).
 
+    Each frame gets its own median-cut palette (keeps photographic camera tones
+    accurate and the file small). ``max_height`` optionally downscales frames.
     Returns the gif path, or ``None`` if there were no frames.
     """
     from PIL import Image
     frames = [Image.open(p).convert("RGB") for p in png_paths]
     if not frames:
         return None
-    frames[0].save(gif_path, save_all=True, append_images=frames[1:],
-                   duration=duration_ms, loop=0)
+    if max_height:
+        frames = [f.resize((round(f.width * max_height / f.height), max_height))
+                  if f.height > max_height else f for f in frames]
+    pframes = [f.quantize(colors=256, method=Image.MEDIANCUT, dither=Image.NONE)
+               for f in frames]
+    pframes[0].save(gif_path, save_all=True, append_images=pframes[1:],
+                    duration=duration_ms, loop=0, disposal=2)
     return gif_path

@@ -52,6 +52,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from pyquaternion import Quaternion
 
 # the reproduced Sparse4D-v3 stack
 PIPELINE_ROOT = Path("/Users/trish/VLMProjects/sparse4d_vldrive")
@@ -60,6 +61,7 @@ sys.path.insert(0, str(PIPELINE_ROOT))
 from sparse4d_vl.data.finetune_loader import NuScenesFinetuneLoader  # noqa: E402
 from sparse4d_vl.model.sparse4d_v3 import Sparse4Dv3                  # noqa: E402
 from sparse4d_vl.model.checkpoint import load_checkpoint             # noqa: E402
+from sparse4d_vl.tools.visualizer import visualise_frame            # noqa: E402
 
 from kbm import KinematicBicycleModel, EgoState                       # noqa: E402
 from controller import TrajectoryController                           # noqa: E402
@@ -107,6 +109,140 @@ def _obb_overlap(a: np.ndarray, b: np.ndarray) -> bool:
     return True
 
 
+def _lidar2ego(nusc, sample_token: str):
+    """Return (R, t, yaw_off) for the LIDAR_TOP→ego transform of this frame.
+
+    nuScenes mounts LIDAR_TOP rotated ~-90° from the ego frame (lidar +x = vehicle
+    right, +y = forward). Perception runs in the lidar frame, but the planner and
+    the simulated ego live in the ego frame (x forward, y left). We therefore lift
+    every lidar-frame quantity into the ego frame before rendering so the plan,
+    boxes and lanes share one "forward = +x = up" convention.
+    """
+    sample = nusc.get('sample', sample_token)
+    cs = nusc.get('calibrated_sensor',
+                  nusc.get('sample_data', sample['data']['LIDAR_TOP'])
+                  ['calibrated_sensor_token'])
+    q = Quaternion(cs['rotation'])
+    R = q.rotation_matrix[:2, :2].astype(np.float64)      # lidar→ego (xy block)
+    t = np.array(cs['translation'][:2], dtype=np.float64)
+    return R, t, float(q.yaw_pitch_roll[0])
+
+
+def _boxes_to_ego(boxes, R, t, yaw_off):
+    """Lift detection boxes [x,y,z,len,wid,h,yaw,vx,vy] from lidar→ego frame."""
+    if boxes is None or len(boxes) == 0:
+        return boxes
+    b = boxes.copy()
+    b[:, 0:2] = b[:, 0:2] @ R.T + t        # centre: rotate then translate
+    b[:, 6]   = b[:, 6] + yaw_off          # heading rotates with the frame
+    b[:, 7:9] = b[:, 7:9] @ R.T            # velocity: rotation only (a direction)
+    return b
+
+
+def _trajs_to_ego(trajs, R):
+    """Rotate motion-forecast displacements (N,K,T,2) from lidar→ego frame."""
+    if trajs is None or len(trajs) == 0:
+        return trajs
+    return trajs @ R.T                      # displacements: rotation only
+
+
+def _combine_panels(cam_path, bev_path, out_path, height: int = 400):
+    """SparseDrive-style composite: surround-camera grid (left) | BEV panel (right).
+
+    Both panels are scaled to a common height and concatenated horizontally —
+    mirroring SparseDrive's tools/visualization layout (cameras + BEV prediction).
+    """
+    from PIL import Image
+    cam = Image.open(cam_path).convert("RGB")
+    bev = Image.open(bev_path).convert("RGB")
+    cam = cam.resize((max(1, round(cam.width * height / cam.height)), height))
+    bev = bev.resize((height, height))
+    combo = Image.new("RGB", (cam.width + bev.width, height), "#0e0e12")
+    combo.paste(cam, (0, 0))
+    combo.paste(bev, (cam.width, 0))
+    combo.save(out_path)
+
+
+def _boxes_ego_to_world(boxes, ego2global, origin):
+    """Lift ego-frame boxes into the world-local frame (global metres − origin)."""
+    if boxes is None or len(boxes) == 0:
+        return boxes
+    R = ego2global[:2, :2]; t = ego2global[:2, 3]
+    yaw_e2g = _yaw_of(ego2global)
+    b = boxes.copy()
+    b[:, 0:2] = b[:, 0:2] @ R.T + t - np.asarray(origin)   # ego → global → local
+    b[:, 6]   = b[:, 6] + yaw_e2g                          # heading → world
+    return b
+
+
+def _scene_lanes_world(loader, sample_token, origin, gt_xy, margin: float = 60.0) -> dict:
+    """HD-map dividers for the whole scene in the world-local frame (fetched once).
+
+    The map is global, so we pull every divider within the trajectory's bounding
+    box (+margin) and shift by the fixed origin — the lanes are then static across
+    all frames and the ego visibly drives along them.
+    """
+    nusc   = loader.nusc
+    sample = nusc.get('sample', sample_token)
+    location = nusc.get('log', nusc.get('scene', sample['scene_token'])['log_token'])['location']
+    nmap   = loader._get_map(location)
+    xs, ys = gt_xy[:, 0], gt_xy[:, 1]
+    patch = (xs.min() - margin, ys.min() - margin, xs.max() + margin, ys.max() + margin)
+    dividers = []
+    recs = nmap.get_records_in_patch(patch, ['road_divider', 'lane_divider'], mode='intersect')
+    for layer in ('road_divider', 'lane_divider'):
+        for token in recs.get(layer, []):
+            line = nmap.extract_line(nmap.get(layer, token)['line_token'])
+            if line.is_empty:
+                continue
+            g = np.asarray(line.coords)[:, :2] - np.asarray(origin)
+            if g.shape[0] >= 2:
+                dividers.append(g.astype(np.float32))
+    return {'divider': dividers, 'boundary': []}
+
+
+def _lane_polylines(loader, sample_token: str, radius: float = 55.0) -> dict:
+    """HD-map lane / road dividers near the ego, in this frame's LIDAR_TOP frame.
+
+    The BEV is drawn in the log-ego (LIDAR_TOP) frame, so we transform each map
+    divider from global coordinates into that frame with the *same* global→lidar
+    transform the loader uses for boxes — the lanes then line up exactly with the
+    detections. Returns ``{'divider': [(n, 2), ...], 'boundary': [...]}`` (metres).
+    """
+    nusc   = loader.nusc
+    sample = nusc.get('sample', sample_token)
+    location = nusc.get('log', nusc.get('scene', sample['scene_token'])['log_token'])['location']
+    nmap   = loader._get_map(location)
+
+    lid_sd = nusc.get('sample_data', sample['data']['LIDAR_TOP'])
+    ep = nusc.get('ego_pose', lid_sd['ego_pose_token'])
+    cs = nusc.get('calibrated_sensor', lid_sd['calibrated_sensor_token'])
+    R_e2g = Quaternion(ep['rotation']).rotation_matrix; t_e2g = np.array(ep['translation'])
+    R_l2e = Quaternion(cs['rotation']).rotation_matrix; t_l2e = np.array(cs['translation'])
+    ex, ey = float(t_e2g[0]), float(t_e2g[1]); r = float(radius)
+    patch = (ex - r, ey - r, ex + r, ey + r)
+
+    def to_lidar(coords):
+        return np.array(
+            [loader._global_to_lidar(np.array([x, y, 0.0]),
+                                     R_e2g, t_e2g, R_l2e, t_l2e)[:2] for x, y in coords],
+            dtype=np.float32)
+
+    dividers = []
+    recs = nmap.get_records_in_patch(patch, ['road_divider', 'lane_divider'],
+                                     mode='intersect')
+    for layer in ('road_divider', 'lane_divider'):
+        for token in recs.get(layer, []):
+            line = nmap.extract_line(nmap.get(layer, token)['line_token'])
+            if line.is_empty:
+                continue
+            lid = to_lidar(np.asarray(line.coords)[:, :2])
+            near = lid[np.linalg.norm(lid, axis=1) <= r]   # keep the in-view portion
+            if near.shape[0] >= 2:
+                dividers.append(near)
+    return {'divider': dividers, 'boundary': []}
+
+
 def _collision_indices(boxes: np.ndarray, sim_delta) -> list[int]:
     """Return the indices of obstacles overlapping the SIMULATED ego footprint.
 
@@ -124,10 +260,11 @@ def _collision_indices(boxes: np.ndarray, sim_delta) -> list[int]:
     ego = _obb_corners(0, 0, 0, _EGO_L, _EGO_W)   # ego rect at the sim-ego origin
     hits = []
     for j, b in enumerate(boxes):                 # box: [x,y,z,w,l,h,yaw,vx,vy]
-        cx, cy, yaw, w, l = b[0], b[1], b[6], b[3], b[4]
+        # box[3] = length (extent along heading), box[4] = width — see bev.py note
+        cx, cy, yaw, length, width = b[0], b[1], b[6], b[3], b[4]
         # translate by -sim_pos then rotate by -dyaw to land in the sim-ego frame
         rel = R @ (np.array([cx, cy]) - np.array([dx, dy]))
-        corners = _obb_corners(rel[0], rel[1], yaw - dyaw, l, w)
+        corners = _obb_corners(rel[0], rel[1], yaw - dyaw, length, width)
         if _obb_overlap(ego, corners):
             hits.append(j)
     return hits
@@ -192,7 +329,15 @@ def main():
     if args.bev:
         for old in outdir.glob("frame_*.png"):
             old.unlink()
-    png_paths = []
+        for old in outdir.glob("world_*.png"):
+            old.unlink()
+        for old in outdir.glob("combo_*.png"):
+            old.unlink()
+    png_paths, world_paths, combo_paths = [], [], []
+    # world-frame view: fixed map + both ego paths, shifted by a constant origin
+    world_origin = gt_xy[0].copy()
+    world_lanes = None                       # fetched once on the first frame
+    gt_world_path, sim_world_path = [], []
 
     print(f"\n[sim] scene {args.scene}: {n} frames — closed-loop ego (KBM), log sensors\n")
     divergences, sim_speeds, col_frames = [], [], 0
@@ -202,12 +347,21 @@ def main():
         with torch.no_grad():
             out = model(fr["imgs"].float(), metas)
         det = out["detections"][0]
-        boxes = det["boxes_3d"].cpu().numpy()
+        boxes_lidar = det["boxes_3d"].cpu().numpy()         # lidar frame (for cameras)
+        scores = det["scores_3d"].cpu().numpy() if "scores_3d" in det else None
+        labels = det["labels_3d"].cpu().numpy() if "labels_3d" in det else None
         tids = det["track_ids"].cpu().numpy() if "track_ids" in det else None
         trajs = det["trajectories"].cpu().numpy() if "trajectories" in det else None
         tsco = det["traj_scores"].cpu().numpy() if "traj_scores" in det else None
         cmd = int(fr["command"])
         plan = out["ego_traj"][0, cmd].cpu().numpy()        # (Te, 2) ego-frame disp
+
+        # Lift the lidar-frame perception (boxes, forecasts) into the EGO frame so
+        # it shares the planner's "forward = +x" convention; otherwise the agents
+        # render ~90° rotated from the plan (lidar +y = ego forward).
+        R_l2e, t_l2e, yaw_l2e = _lidar2ego(loader.nusc, metas["sample_token"])
+        boxes = _boxes_to_ego(boxes_lidar, R_l2e, t_l2e, yaw_l2e)
+        trajs = _trajs_to_ego(trajs, R_l2e)
 
         # closed-loop pose of the simulated ego, expressed in this frame's log-ego frame
         ego = kbm.ego
@@ -236,14 +390,51 @@ def main():
 
         if args.bev:
             png = str(outdir / f"frame_{i:03d}.png")
+            lanes = _lane_polylines(loader, metas["sample_token"])  # lidar frame
+            map_lines = {k: [pl @ R_l2e.T + t_l2e for pl in v]      # → ego frame
+                         for k, v in lanes.items()}
             bev.render_frame(png, boxes=boxes, track_ids=tids,
                              trajectories=trajs, traj_scores=tsco,
                              ego_plan=plan, sim_delta=sim_delta,
-                             collision_idx=col_idx,
+                             collision_idx=col_idx, map_lines=map_lines,
                              divergence=divergence, speed=ego.v, control=c,
                              frame_idx=i, n_tracks=n_trk,
                              title=f"scene {args.scene}  cmd={_CMD[cmd]}")
             png_paths.append(png)
+
+            # ---- world-frame view (global, north-up): fixed map + both paths ----
+            if world_lanes is None:
+                world_lanes = _scene_lanes_world(loader, metas["sample_token"],
+                                                 world_origin, gt_xy)
+            gt_w  = gt_xy[i] - world_origin
+            sim_w = np.array([ego.x, ego.y]) - world_origin
+            gt_world_path.append(gt_w)
+            sim_world_path.append(sim_w)
+            boxes_w = _boxes_ego_to_world(boxes, metas["ego2global"], world_origin)
+            wpng = str(outdir / f"world_{i:03d}.png")
+            bev.render_world_frame(
+                wpng, boxes=boxes_w, track_ids=tids, map_lines=world_lanes,
+                gt_ego=(float(gt_w[0]), float(gt_w[1]), float(gt_yaw[i])),
+                sim_ego=(float(sim_w[0]), float(sim_w[1]), float(ego.yaw)),
+                gt_path=np.array(gt_world_path), sim_path=np.array(sim_world_path),
+                center=(float(gt_w[0]), float(gt_w[1])), lim=50.0,
+                frame_idx=i, divergence=divergence,
+                title=f"scene {args.scene}  world frame")
+            world_paths.append(wpng)
+
+            # ---- SparseDrive-style composite: surround cameras (3D boxes) | BEV ----
+            if scores is not None and labels is not None:
+                camdir = outdir / "cam"; camdir.mkdir(exist_ok=True)
+                # projection_mat is lidar→pixel, so use the LIDAR-frame boxes; swap
+                # slots 3/4 so the projected box draws length (not width) along yaw.
+                cam_boxes = boxes_lidar.copy()
+                cam_boxes[:, [3, 4]] = boxes_lidar[:, [4, 3]]
+                cam_path = visualise_frame(fr["imgs"][0].numpy(), metas["projection_mat"],
+                                           cam_boxes, scores, labels, i, camdir,
+                                           score_thresh=0.3)
+                combo = str(outdir / f"combo_{i:03d}.png")
+                _combine_panels(cam_path, png, combo)
+                combo_paths.append(combo)
 
         # advance the KBM to the next frame with zero-order-hold control
         if i < n - 1:
@@ -259,7 +450,14 @@ def main():
     if args.bev and png_paths:
         gif = str(outdir / f"scene{args.scene}_closedloop.gif")
         bev.make_gif(png_paths, gif, duration_ms=400)
-        print(f"  BEV frames               : {len(png_paths)} PNGs + {gif}")
+        print(f"  BEV frames (ego)         : {len(png_paths)} PNGs + {gif}")
+        wgif = str(outdir / f"scene{args.scene}_world.gif")
+        bev.make_gif(world_paths, wgif, duration_ms=400)
+        print(f"  BEV frames (world)       : {len(world_paths)} PNGs + {wgif}")
+        if combo_paths:
+            sdgif = str(outdir / f"scene{args.scene}_sparsedrive.gif")
+            bev.make_gif(combo_paths, sdgif, duration_ms=400)
+            print(f"  Composite (cams+BEV)     : {len(combo_paths)} PNGs + {sdgif}")
     print("[sim] full chain ran: multi-view→track→motion→plan→control→KBM ✓")
 
 
