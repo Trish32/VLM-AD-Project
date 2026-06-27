@@ -22,9 +22,9 @@ from collections import defaultdict
 
 import torch
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(ROOT / 'tools'))
 
 from model import BEVFormerTiny
 from eval import _build_remap

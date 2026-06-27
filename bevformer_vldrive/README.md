@@ -38,7 +38,7 @@ python tools/make_composite_gif.py --scenes 5 --vl
 
 Useful flags:
 - `--no-vl` — skip Ollama and reuse the cached per-scene decisions in
-  `tools/decisions_scene{N}.jsonl` (fast; reruns are resumable).
+  `tools/decisions/decisions_scene{N}.jsonl` (fast; reruns are resumable).
 - `--cam-gif` — also write a camera-only GIF per scene.
 - `--frame-ms 800` — per-frame duration.
 
@@ -61,7 +61,7 @@ python tools/infer.py \
 # bev_outputs/vis_xxx.png (scene canvas) and the live composite latest_bev_grid.jpg
 python tools/vis_infer.py --scene 5 --max-frames 10                  # BEV only
 python tools/vis_infer.py --scene 5 --max-frames 10 --vl \
-    --log tools/decisions_scene5.jsonl                               # + streaming VLM
+    --log tools/decisions/decisions_scene5.jsonl                     # + streaming VLM
 ```
 
 ---

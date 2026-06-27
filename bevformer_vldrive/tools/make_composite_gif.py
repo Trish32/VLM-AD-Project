@@ -56,6 +56,7 @@ from vis_infer import (
 OUT_DIR  = ROOT / 'bev_outputs'
 OUT_BEV  = OUT_DIR / 'composite_bev_vlm.gif'
 OUT_CAM  = OUT_DIR / 'composite_cam_vlm.gif'
+DEC_DIR  = TOOLS_DIR / 'decisions'      # per-scene VLM decision logs
 
 
 # ── Overlay: VLM block anchored to the TOP of a panel ───────────────────────────
@@ -168,7 +169,7 @@ def _render_scene(model, nusc, loader, scene_idx, args, device, log_path=None):
             querying = False
             print(f'[INFO]   reuse cached decisions ({log_path})')
     if not args.vl:
-        dec_path = Path(args.decisions or (TOOLS_DIR / 'decisions.jsonl'))
+        dec_path = Path(args.decisions or (DEC_DIR / 'decisions.jsonl'))
         rows = [json.loads(l) for l in dec_path.read_text().splitlines() if l.strip()]
         by_frame = {r['frame']: r for r in _latest_complete_run(rows, args.max_frames)}
 
@@ -315,7 +316,8 @@ def main():
     for s in scenes:
         print('─' * 72)
         name = nusc.scene[s]['name']
-        log  = TOOLS_DIR / f'decisions_scene{s}.jsonl'
+        DEC_DIR.mkdir(parents=True, exist_ok=True)
+        log  = DEC_DIR / f'decisions_scene{s}.jsonl'
         comp, cam = _render_scene(model, nusc, loader, s, args, device, log_path=str(log))
         if not comp:
             print(f'[WARN] scene {s} produced no frames'); continue
