@@ -56,7 +56,7 @@ from vis_infer import (
 OUT_DIR  = ROOT / 'bev_outputs'
 OUT_BEV  = OUT_DIR / 'composite_bev_vlm.gif'
 OUT_CAM  = OUT_DIR / 'composite_cam_vlm.gif'
-DEC_DIR  = TOOLS_DIR / 'decisions'      # per-scene VLM decision logs
+DEC_DIR  = TOOLS_DIR / 'reasoning_decisions'   # per-scene VLM decision logs
 
 
 # ── Overlay: VLM block anchored to the TOP of a panel ───────────────────────────

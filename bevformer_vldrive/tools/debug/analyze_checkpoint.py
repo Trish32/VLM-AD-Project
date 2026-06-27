@@ -1,11 +1,16 @@
-import torch
+from pathlib import Path
 from collections import Counter
+
+import torch
 """
-A quick script to analyze the checkpoint file and print a summary of the parameter counts by module prefix. 
+A quick script to analyze the checkpoint file and print a summary of the parameter counts by module prefix.
 This can help verify that the expected parameters are present and identify any unexpected ones.
 python analyze_checkpoint.py 2>/dev/null suppresses warnings about missing keys when loading the checkpoint, since we're only interested in the raw parameter keys here.
 """
-ckpt = torch.load('model/checkpoints/bevformer_tiny_fp16_epoch_24.pth', map_location='cpu')
+# Resolve the checkpoint relative to the project root so the script runs from anywhere
+# (it lives in tools/debug/, three levels below the repo root).
+ROOT = Path(__file__).resolve().parent.parent.parent
+ckpt = torch.load(ROOT / 'model/checkpoints/bevformer_tiny_fp16_epoch_24.pth', map_location='cpu')
 raw = ckpt.get('state_dict', ckpt)
 # Top-level prefixes (e.g. backbone, neck, pts_bbox_head, query_embedding, …) are a good first check for expected vs. unexpected parameter counts.
 prefixes = Counter(k.split('.')[0] for k in raw.keys())

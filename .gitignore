@@ -29,3 +29,6 @@ bevformer_vldrive/prompts.txt
 # --- scene GIFs: only the README demo (scene07) is tracked ---
 bevformer_vldrive/bev_outputs/scene_gifs/*
 !bevformer_vldrive/bev_outputs/scene_gifs/scene07_scene-1077_bev.gif
+
+# --- project memory (kept local, excluded from GitHub) ---
+bevformer_vldrive/memory/
