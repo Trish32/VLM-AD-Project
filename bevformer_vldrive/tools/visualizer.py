@@ -60,6 +60,14 @@ GROUP_COLORS: dict[str, tuple] = {
     'traffic_cone': (200,  50, 200),   # magenta  (palette index 4)
 }
 
+# Short tags drawn on BEV boxes (full group names are too wide).
+GROUP_SHORT: dict[str, str] = {
+    'vehicle':      'veh',
+    'pedestrian':   'ped',
+    'barrier':      'bar',
+    'traffic_cone': 'cone',
+}
+
 PC_RANGE = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
 
 # nuScenes category prefix → our group name (for GT annotation drawing)
@@ -205,6 +213,7 @@ def _draw_detections(
     indices = [int(i) for i in order if float(scores[i]) > score_thr]
 
     det_layer = base.copy()
+    box_labels = []           # (col, row, group) for crisp post-blend text
     # Combined LiDAR→global rotation: ego2global ∘ lidar2ego
     yaw_total = ego_yaw + lidar2ego_yaw
     cos_t, sin_t = math.cos(yaw_total), math.sin(yaw_total)
@@ -245,8 +254,22 @@ def _draw_detections(
         cv2.fillPoly(det_layer, [corners], color=fill)
         cv2.polylines(det_layer, [corners], isClosed=True,
                       color=_edge_color(fill), thickness=1)
+        # Anchor the class label at the box's top-left corner.
+        lx = int(corners[:, 0, 0].min())
+        ly = int(corners[:, 0, 1].min())
+        box_labels.append((lx, ly, group, _edge_color(fill)))
 
-    return cv2.addWeighted(det_layer, box_alpha, base, 1.0 - box_alpha, 0)
+    out = cv2.addWeighted(det_layer, box_alpha, base, 1.0 - box_alpha, 0)
+
+    # Draw short class tags on the blended canvas (crisp, not alpha-faded).
+    for lx, ly, group, color in box_labels:
+        tag = GROUP_SHORT.get(group, group[:3])
+        org = (lx, max(8, ly - 3))
+        cv2.putText(out, tag, org, cv2.FONT_HERSHEY_SIMPLEX, 0.32,
+                    (0, 0, 0), 2, cv2.LINE_AA)               # dark outline
+        cv2.putText(out, tag, org, cv2.FONT_HERSHEY_SIMPLEX, 0.32,
+                    color, 1, cv2.LINE_AA)                   # coloured text
+    return out
 
 
 # ── GT annotation boxes ────────────────────────────────────────────────────────

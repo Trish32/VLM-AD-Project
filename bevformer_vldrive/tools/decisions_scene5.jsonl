@@ -1,0 +1,10 @@
+{"frame": 0, "token": "c1676a2feac74eee8aa38ca3901787d6", "decision": "SLOW_DOWN", "reasoning": "There are red shapes ahead indicating vehicles that could be obstacles.", "bev_ms": 580.4, "vl_ms": 8872.6}
+{"frame": 1, "token": "d6b0de49811b4d1b86a0933719c0c44a", "decision": "STOP", "reasoning": "The red shapes ahead indicate vehicles that are likely to be obstacles.", "bev_ms": 388.0, "vl_ms": 3693.4}
+{"frame": 2, "token": "6d5d0e60cbf4429d8b6cfa055924e5ca", "decision": "STOP", "reasoning": "The ego vehicle is approaching a barrier that appears to be blocking the road ahead.", "bev_ms": 220.7, "vl_ms": 3761.2}
+{"frame": 3, "token": "a51146d2b181450292623ec03ade9f03", "decision": "STOP", "reasoning": "The red shapes ahead indicate vehicles that are likely to be obstacles.", "bev_ms": 239.4, "vl_ms": 3684.0}
+{"frame": 4, "token": "092051710b7b4d9294e98dcb3f0f7be1", "decision": "STOP", "reasoning": "The ego vehicle is approaching a barrier with no visible opening.", "bev_ms": 244.0, "vl_ms": 3677.9}
+{"frame": 5, "token": "feaef544d11646ed806b53d9e1f39cd9", "decision": "STOP", "reasoning": "The ego vehicle is approaching a barrier ahead which could block the path.", "bev_ms": 255.6, "vl_ms": 3732.3}
+{"frame": 6, "token": "dca2cc206bb34bc197ae8ebdaed22f35", "decision": "STOP", "reasoning": "The ego vehicle is approaching a barrier that appears to be blocking the road ahead.", "bev_ms": 233.1, "vl_ms": 3788.4}
+{"frame": 7, "token": "fe42b85d7f7a4107b650ffa993a4fbff", "decision": "STOP", "reasoning": "The red shape ahead appears to be a vehicle and is positioned directly on the road path, indicating it may block the way.", "bev_ms": 272.4, "vl_ms": 3952.0}
+{"frame": 8, "token": "fe2a163b8948451b95fa48e21e1988ce", "decision": "STOP", "reasoning": "A red vehicle is directly ahead on the road.", "bev_ms": 284.1, "vl_ms": 3653.6}
+{"frame": 9, "token": "3a7aa284dd9d485d8effc20db8cda140", "decision": "SLOW_DOWN", "reasoning": "The red shape ahead appears to be a vehicle, indicating a potential obstacle.", "bev_ms": 279.1, "vl_ms": 3771.3}

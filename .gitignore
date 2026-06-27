@@ -1,0 +1,31 @@
+# --- Model weights / checkpoints (too large for GitHub) ---
+*.pt
+*.pth
+*.ckpt
+
+# --- Claude artifacts ---
+.claude/
+Claude.md
+CLAUDE.md
+
+# --- Project outputs (excluded per request) ---
+sparse4d_vldrive/sparse4d_outputs/
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- OS / editor cruft ---
+.DS_Store
+
+# Disabled nested git repos (renamed aside, not for pushing)
+*.git_disabled/
+
+# --- prompts (kept local, excluded from GitHub) ---
+bevformer_vldrive/prompts.txt
+
+# --- scene GIFs: only the README demo (scene07) is tracked ---
+bevformer_vldrive/bev_outputs/scene_gifs/*
+!bevformer_vldrive/bev_outputs/scene_gifs/scene07_scene-1077_bev.gif

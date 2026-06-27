@@ -216,12 +216,16 @@ def render_bev(
         if 0 <= y_pix < IMG_SIZE:
             cv2.line(canvas, (0, y_pix), (IMG_SIZE, y_pix), grid_colour, 1)
 
-    # Axis labels
+    # Axis labels — draw real arrows (OpenCV's Hershey font can't render the
+    # Unicode ↑ / ← glyphs, which previously showed up as "???").
     mid = IMG_SIZE // 2
-    cv2.putText(canvas, '↑ Fwd', (mid - 22, 18),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
-    cv2.putText(canvas, '← L', (6, mid + 4),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
+    axis_c = (200, 200, 200)
+    cv2.arrowedLine(canvas, (mid, 22), (mid, 6), axis_c, 1, cv2.LINE_AA, tipLength=0.5)
+    cv2.putText(canvas, 'Fwd', (mid + 6, 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, axis_c, 1, cv2.LINE_AA)
+    cv2.arrowedLine(canvas, (24, mid), (6, mid), axis_c, 1, cv2.LINE_AA, tipLength=0.5)
+    cv2.putText(canvas, 'L', (28, mid + 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, axis_c, 1, cv2.LINE_AA)
 
     # ---- 4. Ego vehicle triangle -----------------------------------------
     tri_size = 10
