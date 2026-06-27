@@ -32,3 +32,6 @@ bevformer_vldrive/bev_outputs/scene_gifs/*
 
 # --- project memory (kept local, excluded from GitHub) ---
 bevformer_vldrive/memory/
+
+# --- editor config (local only) ---
+.vscode/
