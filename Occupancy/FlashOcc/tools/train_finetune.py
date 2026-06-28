@@ -6,11 +6,11 @@ Reproduces the occupancy loss of ``BEVOCCHead2D.loss`` with ``use_mask=True``,
 number of visible voxels.  Optimiser/clip match the config (AdamW lr=1e-4,
 wd=1e-2, grad-clip max_norm=5).
 
-Requires Occ3D occupancy GT -- see flashOcc_vl/data/occ_gt.py for download.
+Requires Occ3D occupancy GT -- see data/occ_gt.py for download.
 
 Example (8-step smoke run):
     PYTORCH_ENABLE_MPS_FALLBACK=1 conda run -n simple_bev_vldrive \
-        python flashOcc_vl/tools/train_finetune.py --occ-root /path/to/gts \
+        python tools/train_finetune.py --occ-root /path/to/gts \
         --device mps --steps 8
 """
 import argparse

@@ -2,7 +2,7 @@
 
 Example:
     PYTORCH_ENABLE_MPS_FALLBACK=1 conda run -n simple_bev_vldrive \
-        python flashOcc_vl/tools/infer.py --frame 0 --device mps
+        python tools/infer.py --frame 0 --device mps
 """
 import argparse
 import os

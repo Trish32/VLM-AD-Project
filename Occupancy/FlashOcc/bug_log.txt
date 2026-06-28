@@ -1,7 +1,7 @@
 FlashOcc-VL — pure-PyTorch / MPS port of FlashOcc (BEVDetOCC, flashocc-r50)
 ===========================================================================
 Config reproduced: FlashOCC/projects/configs/flashocc/flashocc-r50.py
-Checkpoint:        flashOcc_vl/model/checkpoints/flashocc-r50-256x704.pth
+Checkpoint:        model/checkpoints/flashocc-r50-256x704.pth
                    (official M1, full-val mIoU 32.08; 430 tensors, 44.74M params)
 Env: conda run -n simple_bev_vldrive (torch 2.12, MPS). Set
      PYTORCH_ENABLE_MPS_FALLBACK=1. nuScenes-mini at
@@ -130,12 +130,12 @@ Reimplements ray_metrics.py WITHOUT the CUDA dvr renderer:
 COMMANDS
 --------
 infer:    PYTORCH_ENABLE_MPS_FALLBACK=1 conda run -n simple_bev_vldrive \
-            python flashOcc_vl/tools/infer.py --frame 0 --device mps
+            python tools/infer.py --frame 0 --device mps
 eval:     PYTORCH_ENABLE_MPS_FALLBACK=1 conda run -n simple_bev_vldrive \
-            python flashOcc_vl/tools/eval.py --occ-root <gts> --device mps \
+            python tools/eval.py --occ-root <gts> --device mps \
             [--metric miou|ray-iou] [--scene scene-0103] [--limit N]
 finetune: PYTORCH_ENABLE_MPS_FALLBACK=1 conda run -n simple_bev_vldrive \
-            python flashOcc_vl/tools/train_finetune.py --occ-root <gts> --steps 8
+            python tools/train_finetune.py --occ-root <gts> --steps 8
 
 VERIFIED — REAL Occ3D GT (downloaded 2026-06-14 to
 /Users/trish/Downloads/Occ3D_nuScenes/gts, 850 scenes, 2.6GB, gdown <id>)

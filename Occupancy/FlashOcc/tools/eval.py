@@ -5,14 +5,14 @@ Reproduces ``Metric_mIoU`` (use_image_mask=True, num_classes=18) from
 matrix over camera-visible voxels, reporting per-class IoU and mIoU over
 classes 0..16 (the 'free' class 17 is excluded from the mIoU average).
 
-Requires Occ3D occupancy GT -- see flashOcc_vl/data/occ_gt.py for download.
+Requires Occ3D occupancy GT -- see data/occ_gt.py for download.
 
 Example:
     PYTORCH_ENABLE_MPS_FALLBACK=1 conda run -n simple_bev_vldrive \
-        python flashOcc_vl/tools/eval.py --occ-root /path/to/gts --device mps
+        python tools/eval.py --occ-root /path/to/gts --device mps
     
     PYTORCH_ENABLE_MPS_FALLBACK=1 conda run -n simple_bev_vldrive \
-  python flashOcc_vl/tools/eval.py --occ-root /Users/trish/Downloads/Occ3D_nuScenes/gts \
+  python tools/eval.py --occ-root /Users/trish/Downloads/Occ3D_nuScenes/gts \
   --device mps --metric ray-iou --scene scene-0103
 
 """
