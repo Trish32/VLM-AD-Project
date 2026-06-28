@@ -1,4 +1,4 @@
-# QCNet_vl — pure-PyTorch QCNet (Argoverse 2) on Apple MPS
+# QCNet — pure-PyTorch QCNet (Argoverse 2) on Apple MPS
 
 A faithful reimplementation of the official [QCNet](https://github.com/ZikangZhou/QCNet)
 (CVPR 2023, AV2 marginal motion forecasting) with **no PyTorch-Geometric, torch_cluster,

@@ -46,7 +46,7 @@ def main():
         model.evaluate_step(data, metrics)
     dt = time.time() - t0
 
-    print('\n================ QCNet_vl  (pure-PyTorch, MPS) ================')
+    print('\n================ QCNet  (pure-PyTorch, MPS) ================')
     print(f'{"metric":>10} | {"ours":>8} | {"published":>9}')
     print('-' * 36)
     for name in ['minADE', 'minFDE', 'MR', 'Brier']:

@@ -1,4 +1,4 @@
-QCNet_vl — bug log (pure-PyTorch QCNet on MPS, validated against official QCNet_AV2 ckpt)
+QCNet — bug log (pure-PyTorch QCNet on MPS, validated against official QCNet_AV2 ckpt)
 =========================================================================================
 
 [checkpoint fidelity]
