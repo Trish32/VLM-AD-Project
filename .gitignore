@@ -41,3 +41,8 @@ simulator/sim_outputs/frame_*.png
 simulator/sim_outputs/world_*.png
 simulator/sim_outputs/combo_*.png
 simulator/sim_outputs/cam/
+
+# --- sparse4d_vldrive: keep only the tracking GIF, not per-frame renders ---
+sparse4d_vldrive/sparse4d_track_outputs/track_*.png
+sparse4d_vldrive/sparse4d_track_outputs/bev_*.png
+sparse4d_vldrive/sparse4d_track_outputs/combo_*.png
