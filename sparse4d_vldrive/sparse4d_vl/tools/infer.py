@@ -4,13 +4,13 @@ Sparse4D inference on nuScenes mini — pure PyTorch, MPS-compatible.
 Usage
 -----
   # v2 (recommended — temporal tracking)
-  conda run -n simple_bev_vldrive python sparse4d_vl/infer.py \
+  conda run -n simple_bev_vldrive python sparse4d_vl/tools/infer.py \
         --version v2 \
         --dataroot /Users/trish/Downloads/nuScenes_miniV1.0 \
         --scene 0
 
   # v1 (single-frame)
-  conda run -n simple_bev_vldrive python sparse4d_vl/infer.py \
+  conda run -n simple_bev_vldrive python sparse4d_vl/tools/infer.py \
         --version v1 \
         --dataroot /Users/trish/Downloads/nuScenes_miniV1.0
 
@@ -33,8 +33,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-# Allow running from the project root
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Allow running from the project root (this file lives in sparse4d_vl/tools/)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from sparse4d_vl.data.loader import NuScenesSparse4DLoader
 from sparse4d_vl.model.sparse4d_v2 import Sparse4Dv1, Sparse4Dv2

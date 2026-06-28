@@ -198,7 +198,3 @@ downstream KBM simulator both draw `box[3]` along the heading for this reason.
 | `sparse4d_vl/infer.py` | quick scene inference + simple BEV dump |
 | `train_v2.py` / `train_v3.py` / `train_finetune.py` | training entry points |
 | `checkpoints/` | `sparse4dv3_r50.pth`, `sparse4dv2_r50_*.pth` (gitignored — large) |
-
-**Constraints** (`Claude.md`): force `torch.device("mps")`; no `mmcv` / `mmdet3d`
-/ C++ extensions; the 4-D Deformable Aggregation is reimplemented with vectorized
-projection + `grid_sample`; keep geometric transforms transparent.
