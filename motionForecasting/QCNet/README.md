@@ -9,6 +9,26 @@ The goal is correctness reproduction against the **official pretrained `QCNet_AV
 checkpoint**: the 949-tensor state_dict loads with **0 missing / 0 unexpected** keys, and
 validation metrics reproduce the published AV2 numbers.
 
+## Qualitative result
+
+![QCNet multimodal forecast](viz_outputs/05232a32-b689-4d23-b31a-f29e41183cbb_qcnet.gif)
+
+*An Argoverse 2 val scenario in the official QCNet style. The HD map is drawn dark
+(drivable area), with light lane boundaries and salmon pedestrian crossings; agents
+are oriented boxes (the **focal agent blue**, others grey). At t = 4.9 s QCNet
+predicts the focal agent's **6 future modes** — the fan of dashed, arrow-tipped
+trajectories, coloured per mode with opacity ∝ probability — while the **green dashed**
+line is the ground-truth future. As the clip plays the agents drive and the focal
+agent's true path can be compared against the predicted modes.*
+
+Regenerate (any val index):
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 conda run -n simple_bev_vldrive \
+  python visualize.py --root "/Users/trish/Downloads/Argoverse 2" --index 0
+# → viz_outputs/<scenario_id>_qcnet.gif
+```
+
 ## What was replaced (and how)
 | Official dependency | Replacement (`utils/pyg_compat.py`) |
 | --- | --- |
