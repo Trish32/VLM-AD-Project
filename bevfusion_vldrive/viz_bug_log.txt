@@ -45,25 +45,33 @@ Fix  (bev_viz._corners_3d)
 
 
 ------------------------------------------------------------------------------
-BUG 3 — boxes float above the ground (z treated as bottom)
+BUG 3 — the two ports use DIFFERENT box-z conventions
 ------------------------------------------------------------------------------
 Symptom
-    Projected boxes hovered ~half a box-height above the road / objects.
+    With a single z rule, one project's boxes were grounded but the other's
+    floated / sank. Treating z as bottom grounded BEVFusion_robust_vl but lifted
+    bevfusion_vl boxes by ~h/2; treating z as centre did the opposite.
 
-Root cause
-    Corners spanned [z, z+h], i.e. z was assumed to be the box BOTTOM. The
-    detector's z is the box CENTRE (gravity centre), so [z, z+h] lifts the box up
-    by h/2.
+Root cause — different detection heads emit different z:
+    • BEVFusion_robust_vl (anchor3d head):   z = box BOTTOM.
+    • bevfusion_vl       (TransFusion head): z = box CENTRE (gravity centre).
 
-    Why it was invisible until visualised: nuScenes mAP / NDS are **2-D / BEV**
-    metrics (centre-distance matching + ATE in the ground plane). Height is not
-    scored, so a z-centre-vs-bottom mix-up does not move the numbers — only the
-    3-D render exposes it. (tools/eval_det.py even passes `z + h/2` as the box
-    centre, which is the same latent error, harmless to the metric.)
+    Verified per project by measuring box z against the *local* LiDAR ground
+    under each near vehicle:
+        robust:  z - ground        ≈ +0.06 / -0.15 m   → z = bottom
+        MIT:     z - h/2 - ground  ≈ +0.14 / -0.14 m   → z = centre
+    Both `tools/eval*.py` happen to use gravity_centre = `z + h/2`; that is
+    correct for the robust head but a latent (metric-invisible) over-shift for
+    the MIT head — and nuScenes mAP/NDS, being 2-D, never reveal it.
 
-Fix  (bev_viz._corners_3d)
-    zs span [-h/2, +h/2] about z  →  box spans [z - h/2, z + h/2].
-    Boxes now rest on the ground. (BEV is unaffected — it uses only x,y.)
+Fix  (bev_viz._corners_3d / composite, ``z_center`` flag)
+    Box bottom z0 = (z - h/2) if z_center else z; corners span [z0, z0+h].
+    Drivers pass z_center=True for bevfusion_vl (TransFusion), False for the
+    robust port (anchor3d). Both now rest on the ground.
+
+    Lesson: do not assume one box convention across "the same" model family —
+    the detection head decides whether z is centre or bottom, and a 2-D metric
+    won't catch a mismatch.
 
 
 ------------------------------------------------------------------------------

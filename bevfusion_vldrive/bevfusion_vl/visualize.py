@@ -52,7 +52,8 @@ def main():
         boxes, scores, labels = model(frame)[0]
         comp = bev_viz.composite(nusc, tok, args.dataroot, frame['points'],
                                  boxes, scores, labels, C.DetCfg.POINT_CLOUD_RANGE,
-                                 C.OBJECT_CLASSES, "BEVFusion (MIT)", args.score_thr)
+                                 C.OBJECT_CLASSES, "BEVFusion (MIT)", args.score_thr,
+                                 z_center=True)   # TransFusion: z = gravity centre
         frames.append(comp)
         n = int((scores >= args.score_thr).sum()) if scores.numel() else 0
         print(f"  frame {i:02d}: {n} boxes (>= {args.score_thr})")

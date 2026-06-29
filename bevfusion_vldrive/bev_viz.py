@@ -47,26 +47,27 @@ def vis_lidar2img(nusc, sample_token, cam_name):
     return (K @ lidar2cam).astype(np.float64)
 
 
-def _corners_3d(b):
-    """8 corners (lidar frame) of box [x,y,z_bottom,w,l,h,yaw].
+def _corners_3d(b, z_center=False):
+    """8 corners (lidar frame) of box [x,y,z,w,l,h,yaw].
 
-    The detector's yaw maps to the lidar-frame heading as ``-yaw - pi/2`` (the same
-    convention the nuScenes eval uses), with box length l along that heading and
-    width w perpendicular; z is the box bottom so corners span [z, z+h].
+    Heading is ``-yaw - pi/2`` (matches the nuScenes eval), length l along it,
+    width w perpendicular. The two ports differ in the z convention (verified
+    against the local LiDAR ground):
+      • anchor3d head (BEVFusion_robust_vl): z = box BOTTOM   → span [z, z+h]
+      • TransFusion head (bevfusion_vl):     z = box CENTRE   → span [z-h/2, z+h/2]
     """
     x, y, z, w, l, h, yaw = b[:7]
     head = -float(yaw) - math.pi / 2
     c, s = math.cos(head), math.sin(head)
-    # length l along heading, width w perpendicular; z is the box centre so the
-    # box spans [z - h/2, z + h/2] (treating z as bottom lifts boxes off the ground)
+    z0 = z - h / 2 if z_center else z               # box bottom
     xs = [l / 2, l / 2, -l / 2, -l / 2, l / 2, l / 2, -l / 2, -l / 2]
     ys = [w / 2, -w / 2, -w / 2, w / 2, w / 2, -w / 2, -w / 2, w / 2]
-    zs = [-h / 2, -h / 2, -h / 2, -h / 2, h / 2, h / 2, h / 2, h / 2]
+    zs = [0, 0, 0, 0, h, h, h, h]
     out = np.zeros((8, 3))
     for i in range(8):
         out[i, 0] = x + c * xs[i] - s * ys[i]
         out[i, 1] = y + s * xs[i] + c * ys[i]
-        out[i, 2] = z + zs[i]
+        out[i, 2] = z0 + zs[i]
     return out
 
 
@@ -74,10 +75,10 @@ _EDGES = [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4),
           (0, 4), (1, 5), (2, 6), (3, 7)]
 
 
-def _draw_boxes_cam(img, lidar2img, boxes, labels):
+def _draw_boxes_cam(img, lidar2img, boxes, labels, z_center=False):
     H, W = img.shape[:2]
     for b, lab in zip(boxes, labels):
-        corners = np.concatenate([_corners_3d(b), np.ones((8, 1))], 1)
+        corners = np.concatenate([_corners_3d(b, z_center), np.ones((8, 1))], 1)
         proj = (lidar2img @ corners.T).T               # (8,4)
         depth = proj[:, 2]
         if (depth > 0.1).sum() < 8:                    # require fully in front
@@ -93,7 +94,7 @@ def _draw_boxes_cam(img, lidar2img, boxes, labels):
     return img
 
 
-def camera_grid(nusc, sample_token, dataroot, boxes, labels, cell=(480, 270)):
+def camera_grid(nusc, sample_token, dataroot, boxes, labels, cell=(480, 270), z_center=False):
     sample = nusc.get('sample', sample_token)
     cells = []
     for cam in CAM_GRID:
@@ -101,7 +102,7 @@ def camera_grid(nusc, sample_token, dataroot, boxes, labels, cell=(480, 270)):
         img = cv2.imread(str(Path(dataroot) / sd['filename']))
         if img is None:
             img = np.zeros((900, 1600, 3), np.uint8)
-        img = _draw_boxes_cam(img, vis_lidar2img(nusc, sample_token, cam), boxes, labels)
+        img = _draw_boxes_cam(img, vis_lidar2img(nusc, sample_token, cam), boxes, labels, z_center)
         lab = cam.replace('CAM_', '').replace('_', ' ')
         cv2.putText(img, lab, (12, 34), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 4, cv2.LINE_AA)
         cv2.putText(img, lab, (12, 34), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (235, 235, 235), 2, cv2.LINE_AA)
@@ -148,8 +149,12 @@ def bev_panel(points, boxes, labels, pc_range, size):
 
 
 def composite(nusc, sample_token, dataroot, points, boxes, scores, labels,
-              pc_range, classes, title, score_thr=0.3):
-    """Full frame: camera grid (top) + BEV (bottom-left) + legend."""
+              pc_range, classes, title, score_thr=0.3, z_center=False):
+    """Full frame: camera grid (top) + BEV (bottom-left) + legend.
+
+    ``z_center=True`` when the detector's box z is the gravity centre (MIT
+    TransFusion); leave False when z is the box bottom (robust anchor3d).
+    """
     import numpy as np
     boxes = np.asarray(boxes.detach().cpu() if hasattr(boxes, 'detach') else boxes)
     scores = np.asarray(scores.detach().cpu() if hasattr(scores, 'detach') else scores)
@@ -157,7 +162,7 @@ def composite(nusc, sample_token, dataroot, points, boxes, scores, labels,
     keep = scores >= score_thr
     boxes, labels = boxes[keep], labels[keep]
 
-    grid = camera_grid(nusc, sample_token, dataroot, boxes, labels)   # (2*270, 3*480, 3)
+    grid = camera_grid(nusc, sample_token, dataroot, boxes, labels, z_center=z_center)
     gh, gw = grid.shape[:2]
     bev = bev_panel(points, boxes, labels, pc_range, size=gh)         # gh×gh
 
