@@ -57,10 +57,11 @@ def _corners_3d(b):
     x, y, z, w, l, h, yaw = b[:7]
     head = -float(yaw) - math.pi / 2
     c, s = math.cos(head), math.sin(head)
-    # length l along heading, width w perpendicular
+    # length l along heading, width w perpendicular; z is the box centre so the
+    # box spans [z - h/2, z + h/2] (treating z as bottom lifts boxes off the ground)
     xs = [l / 2, l / 2, -l / 2, -l / 2, l / 2, l / 2, -l / 2, -l / 2]
     ys = [w / 2, -w / 2, -w / 2, w / 2, w / 2, -w / 2, -w / 2, w / 2]
-    zs = [0, 0, 0, 0, h, h, h, h]
+    zs = [-h / 2, -h / 2, -h / 2, -h / 2, h / 2, h / 2, h / 2, h / 2]
     out = np.zeros((8, 3))
     for i in range(8):
         out[i, 0] = x + c * xs[i] - s * ys[i]

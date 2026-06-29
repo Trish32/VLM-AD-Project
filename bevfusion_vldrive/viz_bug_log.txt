@@ -1,0 +1,82 @@
+==============================================================================
+ BEVFusion visualisation (bev_viz.py) — bug log
+==============================================================================
+Bugs hit while building the shared 6-camera + LiDAR-BEV detection visualiser
+(bev_viz.py) used by bevfusion_vl/visualize.py and BEVFusion_robust_vl/
+visualize.py. Boxes are lidar-frame [x, y, z, w, l, h, yaw, vx, vy].
+
+
+------------------------------------------------------------------------------
+BUG 1 — BEV oriented sideways (forward not up)
+------------------------------------------------------------------------------
+Symptom
+    In the LiDAR BEV panel the road ran left-right (horizontal) and the ego's
+    forward direction pointed sideways, not up.
+
+Root cause
+    The BEV mapped lidar +x to "up". But the nuScenes LiDAR_TOP frame has
+    +x = right, +y = forward (the same ~-90° lidar/ego offset seen in the
+    bevformer / sparse4d / simulator projects). So "x up" puts RIGHT up and the
+    forward road appears horizontal.
+
+Fix  (bev_viz.bev_panel)
+    Map +y (forward) → up, +x (right) → right:
+        col = (x - lo) / rng * size        # right  → right
+        row = (hi - y) / rng * size        # forward→ up
+    (points and box corners use the same to_px).
+
+
+------------------------------------------------------------------------------
+BUG 2 — 3-D boxes rotated 90° (horizontal in BEV, misaligned on cameras)
+------------------------------------------------------------------------------
+Symptom
+    BEV box rectangles sat perpendicular to the road; on the camera images the
+    projected boxes were twisted and didn't wrap the vehicles.
+
+Root cause
+    Box corners were built with length l along the raw `yaw`. The detector's yaw
+    is NOT the lidar-frame heading directly — the nuScenes eval converts it as
+    `Quaternion(z, -yaw - pi/2)` (see tools/eval*.py `to_global`). So the true
+    heading in the lidar frame is `-yaw - pi/2`; using `yaw` is 90° off.
+
+Fix  (bev_viz._corners_3d)
+    head = -yaw - pi/2;  length l along `head`, width w perpendicular.
+    Boxes now align with travel direction in BEV and wrap vehicles on the cameras.
+
+
+------------------------------------------------------------------------------
+BUG 3 — boxes float above the ground (z treated as bottom)
+------------------------------------------------------------------------------
+Symptom
+    Projected boxes hovered ~half a box-height above the road / objects.
+
+Root cause
+    Corners spanned [z, z+h], i.e. z was assumed to be the box BOTTOM. The
+    detector's z is the box CENTRE (gravity centre), so [z, z+h] lifts the box up
+    by h/2.
+
+    Why it was invisible until visualised: nuScenes mAP / NDS are **2-D / BEV**
+    metrics (centre-distance matching + ATE in the ground plane). Height is not
+    scored, so a z-centre-vs-bottom mix-up does not move the numbers — only the
+    3-D render exposes it. (tools/eval_det.py even passes `z + h/2` as the box
+    centre, which is the same latent error, harmless to the metric.)
+
+Fix  (bev_viz._corners_3d)
+    zs span [-h/2, +h/2] about z  →  box spans [z - h/2, z + h/2].
+    Boxes now rest on the ground. (BEV is unaffected — it uses only x,y.)
+
+
+------------------------------------------------------------------------------
+ENVIRONMENT NOTE (not a viz bug, but blocks running the viz on MPS)
+------------------------------------------------------------------------------
+    BEVFusion-PP voxelization calls scatter_reduce(..., reduce='amin') on int64,
+    which MPS does not support → run visualize.py / infer.py with `--device cpu`.
+
+
+------------------------------------------------------------------------------
+Takeaway
+------------------------------------------------------------------------------
+3-D detection that "evaluates fine" can still carry a height/heading convention
+mismatch, because the standard nuScenes metrics are 2-D. Always sanity-check the
+box convention (heading sign/offset, z = centre vs bottom) against a real 3-D
+render before trusting downstream geometry.
