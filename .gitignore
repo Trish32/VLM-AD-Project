@@ -54,6 +54,14 @@ bevformer_vldrive/eval_results/velocity_ablation.json
 # Smoke-test output built from RANDOM labels, not real annotation.
 bevformer_vldrive/eval_results/light_scores.json
 
+# --- nuScenes detection submissions: 23 MB, fully regenerable by re-running
+#     tools/eval.py. Every number the README quotes lives in summary.json,
+#     which IS tracked.
+bevformer_vldrive/eval_results/nuscenes_results.json
+bevformer_vldrive/eval_results/results_mini_*.json
+bevformer_vldrive/eval_results/mini_val/
+bevformer_vldrive/eval_results/mini_train/
+
 # --- prompts (kept local, excluded from GitHub) ---
 bevformer_vldrive/prompts.txt
 
