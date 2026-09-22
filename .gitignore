@@ -1,0 +1,72 @@
+# --- Model weights / checkpoints (too large for GitHub) ---
+*.pt
+*.pth
+*.ckpt
+
+# --- Claude artifacts ---
+.claude/
+Claude.md
+CLAUDE.md
+
+# --- Project outputs (excluded per request) ---
+sparse4d_vldrive/sparse4d_outputs/
+
+# --- diffusiondrive_planner (moved from VLAProjects; rules carried over) ---
+# Pinned upstream clones (nested git repos; re-cloned, never vendored).
+# Commits are pinned in the project README; see its patches/ for our edits.
+diffusiondrive_planner/upstream/
+diffusiondrive_planner/upstream-nusc/
+# Generated working data (regenerable; demo media lives in assets/)
+diffusiondrive_planner/data/
+diffusiondrive_planner/checkpoints/
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- OS / editor cruft ---
+.DS_Store
+
+# Disabled nested git repos (renamed aside, not for pushing)
+*.git_disabled/
+
+# --- traffic-light annotation set: 16 MB of crops, fully regenerable from
+#     tools/make_light_annotation.py. The LABELS are the valuable artifact and
+#     live in tools/light_labels.jsonl, which IS tracked.
+bevformer_vldrive/bev_outputs/light_annotation/
+
+# --- closed-loop rollout output: regenerable from closed_loop.py, and the
+#     numbers that matter are quoted in e2e_pipeline/README.md
+e2e_pipeline/closed_loop_results.json
+
+# --- prompts (kept local, excluded from GitHub) ---
+bevformer_vldrive/prompts.txt
+
+# --- scene GIFs: only the README demo (scene07) is tracked ---
+bevformer_vldrive/bev_outputs/scene_gifs/*
+!bevformer_vldrive/bev_outputs/scene_gifs/scene07_scene-1077_bev.gif
+
+# --- project memory (kept local, excluded from GitHub) ---
+bevformer_vldrive/memory/
+
+# --- editor config (local only) ---
+.vscode/
+
+# --- simulator: keep only GIFs, not the per-frame render images ---
+simulator/sim_outputs/frame_*.png
+simulator/sim_outputs/world_*.png
+simulator/sim_outputs/combo_*.png
+simulator/sim_outputs/cam/
+
+# --- sparse4d_vldrive: keep only the tracking GIF, not per-frame renders ---
+sparse4d_vldrive/sparse4d_track_outputs/track_*.png
+sparse4d_vldrive/sparse4d_track_outputs/bev_*.png
+sparse4d_vldrive/sparse4d_track_outputs/combo_*.png
+
+# --- FlashOcc: keep only the occupancy GIF, not per-frame renders ---
+Occupancy/FlashOcc/occ_outputs/occ_*.png
+
+# --- QCNet: keep only the demo GIF, not per-frame renders ---
+motionForecasting/QCNet/viz_outputs/qc_*.png

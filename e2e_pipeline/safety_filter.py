@@ -1,0 +1,368 @@
+"""
+(2) Safety / feasibility filter:  DiffusionDrive  ->  best feasible trajectory.
+
+A learned planner produces trajectories that are *likely*, not trajectories that are
+*permissible*.  Those differ whenever the training distribution is thin — which is
+precisely the situation where you need the guarantee.  This module is the last stage
+that can say no, and it says no for four independent reasons:
+
+    1. drivable area   — every swept cell is on road surface, not sidewalk or void
+    2. collision       — the swept footprint keeps clearance from occupied space
+    3. dynamics        — curvature, acceleration and lateral load are reachable by
+                         the vehicle the controller actually drives
+    4. risk            — probabilistic collision with uncertain agents stays under
+                         threshold  (see uncertainty.RiskModel)
+
+Gates 1 and 2 come from the FlashOcc branch and are class-agnostic: they reject a
+plan that drives into an unlabelled obstacle the object detector never reported,
+which is the specific hole a purely object-centric stack cannot close.  Gate 4 comes
+from the Sparse4D + QCNet branch and is identity-aware.  The two are complementary
+and neither is redundant.
+
+WHY RE-RANKING IS LEGITIMATE HERE
+---------------------------------
+This matters and is easy to get wrong.  In our SparseDrive `EgoPlanner`
+(`sparse4d_vldrive/.../motion_planning.py`) `ego_fut_mode=3` and the three modes *are*
+the driving commands (left / straight / right) — re-ranking across them would silently
+override the navigation intent and turn a commanded left turn into a straight-ahead.
+
+DiffusionDrive is different: it has `3 commands x 6 anchors = 18` plan queries, and
+the command *selects* which set of 6 to use (see `diffusiondrive_planner/DESIGN.md`).
+The 6 candidates handed to this filter are therefore genuine alternatives under one
+fixed intent, and choosing among them is a safety decision, not a routing decision.
+
+If every candidate fails, the filter does not return the "least bad" plan — it
+returns an explicit emergency-brake trajectory and flags the frame.  A planner that
+silently degrades is worse than one that admits it is stuck.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from .freespace import FreeSpace
+from .scene import EgoState, SceneRepresentation, ego_footprint_corners, yaw_from_waypoints
+from .uncertainty import RiskModel, RiskReport
+
+
+# ---------------------------------------------------------------------------
+# Limits
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FeasibilityLimits:
+    """Dynamic envelope of the ego vehicle.
+
+    Defaults are matched to `simulator/kbm.py` (wheelbase 2.85 m, max steer 0.6 rad)
+    so that anything this filter passes is actually executable by the controller
+    downstream.  Keeping them in one frozen dataclass rather than scattered constants
+    means a change to the vehicle model cannot silently desync the two.
+    """
+
+    wheelbase: float = 2.85
+    max_steer_rad: float = 0.6                       # ~34 deg, matches KBM clamp
+    max_accel: float = 3.0                           # m/s^2, comfortable launch
+    max_decel: float = 6.0                           # m/s^2, hard but not ABS-limit
+    max_lat_accel: float = 4.0                       # m/s^2, ~0.4 g
+    min_clearance: float = 0.5                       # m to nearest occupied cell
+    max_risk: float = 0.05                           # reject above 5% collision prob
+    allow_unknown: bool = False                      # may plans cross unobserved space
+
+    @property
+    def max_curvature(self) -> float:
+        """Tightest turn the steering clamp permits: kappa = tan(delta_max) / L."""
+        return float(np.tan(self.max_steer_rad) / self.wheelbase)
+
+
+# ---------------------------------------------------------------------------
+# Verdicts
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CandidateVerdict:
+    """Why one candidate passed or failed — the filter's audit trail.
+
+    Deliberately records *all* violated gates rather than short-circuiting on the
+    first.  When every candidate is rejected you need to know whether the scene is
+    geometrically impossible (all failed on clearance) or the planner is proposing
+    undriveable curvature (all failed on dynamics); those call for different fixes.
+    """
+
+    index: int
+    feasible: bool
+    reasons: list[str] = field(default_factory=list)
+    min_clearance: float = float("inf")
+    off_road_steps: int = 0
+    unknown_steps: int = 0
+    max_curvature: float = 0.0
+    max_accel: float = 0.0
+    max_lat_accel: float = 0.0
+    risk: RiskReport | None = None
+    cost: float = float("inf")
+    planner_score: float = 0.0
+
+    def describe(self) -> str:
+        tag = "OK " if self.feasible else "REJ"
+        why = ",".join(self.reasons) if self.reasons else "-"
+        risk = f"{self.risk.total:.3f}" if self.risk is not None else "n/a"
+        return (f"[{tag}] cand {self.index}: clear={self.min_clearance:.2f}m "
+                f"risk={risk} kappa={self.max_curvature:.3f} "
+                f"cost={self.cost:.3f} ({why})")
+
+
+@dataclass
+class FilterResult:
+    """What the filter hands the controller."""
+
+    trajectory: np.ndarray                           # (T, 2) chosen plan, ego frame
+    verdicts: list[CandidateVerdict]
+    chosen_index: int | None                         # None when braking
+    emergency: bool = False
+
+    @property
+    def feasible_count(self) -> int:
+        return sum(v.feasible for v in self.verdicts)
+
+    def report(self) -> str:
+        head = (f"SafetyFilter: {self.feasible_count}/{len(self.verdicts)} feasible"
+                + ("  [EMERGENCY BRAKE]" if self.emergency else
+                   f"  chose {self.chosen_index}"))
+        return "\n".join([head] + ["  " + v.describe() for v in self.verdicts])
+
+
+# ---------------------------------------------------------------------------
+# Filter
+# ---------------------------------------------------------------------------
+
+
+class SafetyFilter:
+    """Gate and rank DiffusionDrive's candidate set.
+
+    Parameters
+    ----------
+    limits : dynamic envelope and thresholds.
+    dt : seconds per planning step (0.5 for the 2 Hz / 3 s horizon this stack uses).
+    w_risk / w_clearance / w_planner : cost weights for ranking the *feasible*
+        survivors.  The planner term keeps the learned preference in play — among
+        equally safe options we want the one DiffusionDrive actually liked, not the
+        one that hugs the centre of the widest gap.
+    footprint_lattice : (n_long, n_lat) sample points across the ego rectangle used
+        for the swept-volume check.  3x2 corners-plus-centre is enough at 0.4 m grid
+        resolution; raise it for finer grids.
+    """
+
+    def __init__(self,
+                 limits: FeasibilityLimits | None = None,
+                 dt: float = 0.5,
+                 w_risk: float = 10.0,
+                 w_clearance: float = 1.0,
+                 w_planner: float = 2.0,
+                 footprint_lattice: tuple[int, int] = (5, 3)) -> None:
+        self.limits = limits or FeasibilityLimits()
+        self.dt = float(dt)
+        self.w_risk = float(w_risk)
+        self.w_clearance = float(w_clearance)
+        self.w_planner = float(w_planner)
+        self.footprint_lattice = footprint_lattice
+
+    # -- geometry -----------------------------------------------------------
+
+    def _footprint_samples(self, xy: np.ndarray, yaw: float,
+                           ego: EgoState) -> np.ndarray:
+        """(n, 2) world points covering the ego rectangle at one pose.
+
+        Sampling a lattice rather than rasterising the polygon keeps this exact and
+        allocation-free; at 0.4 m cells a 5x3 lattice over a 4.6x1.8 m body leaves no
+        gap wide enough to hide an obstacle cell.
+        """
+        n_l, n_w = self.footprint_lattice
+        ls = np.linspace(-0.5 * ego.length, 0.5 * ego.length, n_l)
+        ws = np.linspace(-0.5 * ego.width, 0.5 * ego.width, n_w)
+        local = np.stack(np.meshgrid(ls, ws, indexing="ij"), axis=-1).reshape(-1, 2)
+        c, s = np.cos(yaw), np.sin(yaw)
+        rot = np.array([[c, -s], [s, c]])
+        return local @ rot.T + np.asarray(xy, dtype=np.float64)
+
+    def _sweep(self, traj: np.ndarray, ego: EgoState) -> np.ndarray:
+        """(T, n, 2) footprint samples for every waypoint of a plan."""
+        yaws = yaw_from_waypoints(traj, initial_yaw=0.0)
+        return np.stack([self._footprint_samples(traj[t], yaws[t], ego)
+                         for t in range(len(traj))], axis=0)
+
+    # -- kinematics ---------------------------------------------------------
+
+    def _profile(self, traj: np.ndarray, ego: EgoState
+                 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Speed (T,), longitudinal accel (T,), curvature (T,) implied by waypoints.
+
+        The planner emits positions only, so every dynamic quantity here is a finite
+        difference of those positions.  That makes the check slightly pessimistic at
+        the endpoints — a real controller smooths across the boundary — which is the
+        right direction to err for a safety gate.
+        """
+        wp = np.asarray(traj, dtype=np.float64)
+        T = len(wp)
+
+        # Prepend the ego's current position so the first segment is measured against
+        # where the vehicle actually is, not against the first waypoint.
+        pts = np.vstack([np.zeros((1, 2)), wp])                          # (T+1, 2)
+        seg = np.diff(pts, axis=0)                                       # (T, 2)
+        speed = np.linalg.norm(seg, axis=1) / self.dt                    # (T,)
+
+        accel = np.diff(np.concatenate([[ego.speed], speed])) / self.dt  # (T,)
+
+        # Menger curvature over consecutive triples; endpoints reuse their neighbour.
+        kappa = np.zeros(T, dtype=np.float64)
+        for i in range(1, T):
+            a, b, c = pts[i - 1], pts[i], pts[i + 1]
+            ab, bc, ca = (np.linalg.norm(b - a), np.linalg.norm(c - b),
+                          np.linalg.norm(a - c))
+            denom = ab * bc * ca
+            if denom < 1e-6:
+                continue
+            cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+            kappa[i] = abs(2.0 * cross) / denom
+        if T > 1:
+            kappa[0] = kappa[1]
+        return speed, accel, kappa
+
+    # -- per-candidate evaluation ------------------------------------------
+
+    def _evaluate(self, index: int, traj: np.ndarray, scene: SceneRepresentation,
+                  risk_model: RiskModel | None, planner_score: float
+                  ) -> CandidateVerdict:
+        lim = self.limits
+        fs: FreeSpace = scene.freespace
+        ego = scene.ego
+        v = CandidateVerdict(index=index, feasible=True, planner_score=planner_score)
+
+        sweep = self._sweep(traj, ego)                                   # (T, n, 2)
+        flat = sweep.reshape(-1, 2)
+
+        # --- gate 1: drivable area ----------------------------------------
+        unknown = fs.unknown_at(flat).reshape(sweep.shape[:2])           # (T, n)
+        v.unknown_steps = int(unknown.any(axis=1).sum())
+        if v.unknown_steps and not lim.allow_unknown:
+            v.feasible = False
+            v.reasons.append(f"unobserved@{v.unknown_steps}steps")
+
+        # `freespace` strips unobserved cells from `traversable` — it cannot vouch for
+        # road it never saw.  So when the caller explicitly opts into planning through
+        # unknown space we have to re-admit those cells here, or `allow_unknown` would
+        # be unreachable: the unknown gate would pass and this one would still reject.
+        on_road = fs.traversable_at(flat).reshape(sweep.shape[:2])
+        if lim.allow_unknown:
+            on_road = on_road | unknown
+        v.off_road_steps = int((~on_road.all(axis=1)).sum())
+        if v.off_road_steps:
+            v.feasible = False
+            v.reasons.append(f"off-road@{v.off_road_steps}steps")
+
+        # --- gate 2: collision / clearance --------------------------------
+        v.min_clearance = float(fs.clearance_at(flat).min())
+        if v.min_clearance < lim.min_clearance:
+            v.feasible = False
+            v.reasons.append(f"clearance{v.min_clearance:.2f}<{lim.min_clearance}")
+
+        # --- gate 3: dynamic feasibility ----------------------------------
+        speed, accel, kappa = self._profile(traj, ego)
+        v.max_curvature = float(kappa.max())
+        v.max_accel = float(np.abs(accel).max())
+        v.max_lat_accel = float((speed ** 2 * kappa).max())
+
+        if v.max_curvature > lim.max_curvature:
+            v.feasible = False
+            v.reasons.append(f"kappa{v.max_curvature:.3f}>{lim.max_curvature:.3f}")
+        if accel.max() > lim.max_accel:
+            v.feasible = False
+            v.reasons.append(f"accel{accel.max():.2f}>{lim.max_accel}")
+        if -accel.min() > lim.max_decel:
+            v.feasible = False
+            v.reasons.append(f"decel{-accel.min():.2f}>{lim.max_decel}")
+        if v.max_lat_accel > lim.max_lat_accel:
+            v.feasible = False
+            v.reasons.append(f"lat{v.max_lat_accel:.2f}>{lim.max_lat_accel}")
+
+        # --- gate 4: probabilistic risk -----------------------------------
+        if risk_model is not None:
+            v.risk = risk_model.evaluate(traj, scene.agents, dt=self.dt)
+            if v.risk.total > lim.max_risk:
+                v.feasible = False
+                v.reasons.append(f"risk{v.risk.total:.3f}>{lim.max_risk}")
+
+        # --- ranking cost (only meaningful for survivors) ------------------
+        risk_term = self.w_risk * (v.risk.total if v.risk is not None else 0.0)
+        # Clearance beyond a couple of metres buys nothing, so saturate it rather
+        # than rewarding plans that hug the middle of an empty road.
+        clear_term = -self.w_clearance * min(v.min_clearance, 2.0)
+        plan_term = -self.w_planner * planner_score
+        v.cost = float(risk_term + clear_term + plan_term)
+        return v
+
+    # -- fallback -----------------------------------------------------------
+
+    def emergency_brake(self, ego: EgoState, horizon: int) -> np.ndarray:
+        """Straight-ahead maximum-decel stop, (T, 2).
+
+        Emitted when no candidate survives.  Deliberately simple and deliberately not
+        a plan — if the filter has rejected everything, the honest action is to shed
+        speed along the current heading and let the next frame re-plan, not to invent
+        an evasive manoeuvre from the same distribution that just failed.
+        """
+        v0, a = ego.speed, self.limits.max_decel
+        t = np.arange(1, horizon + 1) * self.dt
+        stop_t = v0 / a if a > 0 else 0.0
+        tc = np.minimum(t, stop_t)
+        x = v0 * tc - 0.5 * a * tc ** 2
+        return np.stack([x, np.zeros_like(x)], axis=1)
+
+    # -- main entry point ---------------------------------------------------
+
+    def __call__(self, candidates: np.ndarray, scene: SceneRepresentation,
+                 planner_scores: np.ndarray | None = None,
+                 risk_model: RiskModel | None = None) -> FilterResult:
+        """Filter and rank a candidate set.
+
+        Parameters
+        ----------
+        candidates : (K, T, 2) plans in the ego frame — DiffusionDrive's `plan_reg`
+            for the commanded mode.
+        scene : the fused representation; supplies free space, agents and ego state.
+        planner_scores : (K,) the planner's own preference (`plan_cls` softmaxed).
+            Normalised internally; uniform if omitted.
+        risk_model : enables gate 4.  Omit to run geometry-only filtering.
+
+        Returns
+        -------
+        FilterResult with the chosen trajectory and a per-candidate audit trail.
+        """
+        cand = np.asarray(candidates, dtype=np.float64)
+        if cand.ndim != 3 or cand.shape[-1] != 2:
+            raise ValueError(f"expected (K, T, 2) candidates, got {cand.shape}")
+        K, T, _ = cand.shape
+
+        if planner_scores is None:
+            scores = np.full(K, 1.0 / K)
+        else:
+            s = np.asarray(planner_scores, dtype=np.float64).ravel()
+            if s.shape[0] != K:
+                raise ValueError(f"planner_scores has {s.shape[0]} entries, need {K}")
+            total = s.sum()
+            scores = s / total if total > 0 else np.full(K, 1.0 / K)
+
+        verdicts = [self._evaluate(i, cand[i], scene, risk_model, float(scores[i]))
+                    for i in range(K)]
+
+        survivors = [v for v in verdicts if v.feasible]
+        if not survivors:
+            return FilterResult(
+                trajectory=self.emergency_brake(scene.ego, T),
+                verdicts=verdicts, chosen_index=None, emergency=True)
+
+        best = min(survivors, key=lambda v: v.cost)
+        return FilterResult(trajectory=cand[best.index], verdicts=verdicts,
+                            chosen_index=best.index, emergency=False)
