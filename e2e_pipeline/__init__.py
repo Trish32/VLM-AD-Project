@@ -11,6 +11,9 @@ from .closed_loop import (ClosedLoopRunner, GTWorldModel, LoopConfig,
                           constant_velocity_planner,
                           diffusiondrive_anchor_planner)
 from .metrics import StepRecord, evaluate, format_report, obb_overlap
+from .vlm_planner import (COMMAND_INDEX, DrivingIntent, IntentCache,
+                          VLMIntentPlanner, intent_conditioned_planner,
+                          validate_intent)
 from .safety_filter import (CandidateVerdict, FeasibilityLimits, FilterResult,
                             SafetyFilter)
 from .scene import (Agent, EgoState, SceneRepresentation, TrajectoryDistribution,
@@ -31,4 +34,6 @@ __all__ = [
     "ClosedLoopRunner", "GTWorldModel", "LoopConfig",
     "constant_velocity_planner", "diffusiondrive_anchor_planner",
     "StepRecord", "evaluate", "format_report", "obb_overlap",
+    "DrivingIntent", "IntentCache", "VLMIntentPlanner", "COMMAND_INDEX",
+    "intent_conditioned_planner", "validate_intent",
 ]
