@@ -360,6 +360,46 @@ python tools/eval.py --score-thr 0.1
 
 ---
 
+## Was the decision right?
+
+`tools/score_decisions.py` scores decisions against what the human driver
+actually did, taken from the ego's own future speed profile: stopped or
+decelerating hard -> STOP, easing off -> SLOW_DOWN, holding speed -> PROCEED.
+Frames where the ego never moves are excluded, since they are a free STOP.
+
+**36 scoreable decisions across 5 scenes. Agreement 16.7%.**
+
+```
+confusion (rows = human did, cols = pipeline said)
+                PROCEED  SLOW_DOWN     STOP
+  PROCEED             5          7        5
+  SLOW_DOWN          10          0        8
+  STOP                0          0        1
+```
+
+The headline number is the least useful thing here. Three readings matter more:
+
+**The error is asymmetric, and in the safe direction.** Over-reacted on 55.6% of
+frames, under-reacted on 27.8% — and **PROCEED where the human stopped: 0**.
+That is the one failure that hurts, and on this sample it does not occur.
+
+**SLOW_DOWN is never used where it is warranted.** Of 18 frames where the human
+eased off, the pipeline said PROCEED 10 times and STOP 8 times, and SLOW_DOWN
+zero times. The decision space is being used bimodally; the middle option is
+effectively dead. That is a concrete, actionable defect no previous metric
+surfaced.
+
+**Red/yellow handling holds up.** On all 12 frames where stage 1 read red or
+yellow, the pipeline slowed or stopped — 12/12.
+
+### What this reference is not
+
+It is the human's realised speed, a **proxy**, wrong in knowable ways: a driver
+slows for reasons no sensor sees; SLOW_DOWN and PROCEED are not crisply
+separable; and it rewards imitation, not safety — a human who should have braked
+and did not makes PROCEED "correct". Read it as a **regression detector** ("did
+this change make agreement worse?"), not as a measure of driving quality. n=36.
+
 ## Anchor provenance
 
 The DiffusionDrive planning panel draws from `assets/kmeans_plan_6.npy`, a

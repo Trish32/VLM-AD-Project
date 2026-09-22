@@ -13,10 +13,12 @@ and emits a traffic-light reading, a driving decision (`PROCEED` / `SLOW_DOWN` /
 **Why those four, what each costs, and the ablations behind the design:
 [RESULT.md](RESULT.md).**
 
-![BEVFormer-VLDrive demo](bev_outputs/scene_gifs/scene04_scene-0757_bev.gif)
+![BEVFormer-VLDrive demo](bev_outputs/scene_gifs/scene00_scene-0061_bev.gif)
 
-*scene-0757 — a red light with a completely clear road, which a BEV-only planner
-cannot get right even in principle.*
+*scene-0061 — moving at ~5 m/s through a construction intersection, 154
+detections in frame, green light ahead. The densest scene in nuScenes-mini
+(120 annotations/frame) and one where the ego is actually driving rather than
+waiting at a stop line.*
 
 *Top: 6-camera surround view with projected 3-D boxes; VLM reasoning, `LIGHT`
 chip and decision overlaid on the BACK cell. Bottom, sharing one ego-centric

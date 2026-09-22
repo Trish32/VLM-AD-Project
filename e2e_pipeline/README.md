@@ -19,6 +19,81 @@ multi-camera RGB
                    controller → kinematic bicycle model
 ```
 
+## Layout
+
+```
+e2e_pipeline/
+├── scene.py          # unified ego-frame scene representation: Agent (+ Kalman
+│                     #   covariance, + QCNet forecast), EgoState, footprint
+│                     #   geometry. Frame contract lives here.
+├── freespace.py      # FlashOcc (200,200,16,18) -> traversable / obstacle /
+│                     #   unknown rasters + ESDF. Height band, Occ3D semantics,
+│                     #   unknown-is-not-free.
+├── uncertainty.py    # CV Kalman over Sparse4D track ids (detector score ->
+│                     #   measurement noise) + QCNet Laplace scale -> collision
+│                     #   probability, closed form (non-central chi-squared).
+├── safety_filter.py  # four gates: drivable area, swept-footprint collision,
+│                     #   KBM dynamic feasibility, probabilistic risk.
+│                     #   Emergency brake when nothing survives.
+├── vlm_planner.py    # the bridge: Qwen2.5-VL -> DrivingIntent -> DiffusionDrive
+│                     #   anchors. Validation, IntentCache (rate decoupling),
+│                     #   per-step speed conditioning.
+├── pipeline.py       # per-frame orchestration behind Protocols for the four
+│                     #   networks; frame conversion; occupancy rate decoupling.
+├── closed_loop.py    # ClosedLoopRunner (pipeline -> controller -> KBM),
+│                     #   GTWorldModel oracle, planner stand-ins.
+├── metrics.py        # safety (SAT on oriented boxes) / route completion /
+│                     #   comfort / prediction ADE-FDE / latency p50-p95.
+├── visualize.py      # closed-loop rollout -> animated GIF
+└── tests/            # 95 tests; each gate isolated by a test that fails it
+```
+
+## End-to-end architecture
+
+```
+ 6 x RGB ─┬─ Sparse4D v3 ──► boxes + track ids ─┐
+          │                                      │   (LiDAR frame -> ego, -pi/2)
+          └─ FlashOcc ──► (200,200,16,18) ───┐   │
+                                             ▼   ▼
+                            freespace.py   scene.py ◄── QCNet ─┐
+                        traversable/ESDF   SceneRepresentation │
+                                             │                 │ Laplace loc+scale
+                                             │                 │ + mode probs
+                     ┌───────────────────────┴──────────┐      │
+                     │                                  ▼      ▼
+              vlm_planner.py                     uncertainty.py
+        Qwen2.5-VL ─► DrivingIntent              Kalman cov + forecast spread
+        {command, target_speed,                  ──► collision probability
+         light, hazard, confidence}                        │
+                     │  validated, cached                  │
+                     ▼                                     │
+        DiffusionDrive anchors ──► K candidates             │
+                     │                                     │
+                     ▼                                     ▼
+              safety_filter.py ◄───────────────────────────┘
+        drivable │ collision │ dynamics │ risk
+                     │
+                     ▼  best feasible, or emergency brake
+              controller (pure pursuit)
+                     │
+                     ▼
+        kinematic bicycle model ──► new ego state ──┐
+                     ▲                              │
+                     └──────── closed loop ─────────┘
+```
+
+Three properties the arrangement buys, none of which is free:
+
+- **The VLM cannot cause a collision.** It sits upstream of the safety filter,
+  so it narrows a candidate set the filter already vetted. Worst case it picks a
+  worse feasible plan, or is overruled into a brake.
+- **Latency stops being a defect.** Intent is slowly-varying, so `IntentCache`
+  holds it while the planner and filter run at 20-55 Hz. ~7 s per VLM call is
+  the cadence intent actually changes at.
+- **Two perception branches, neither redundant.** Sparse4D reports only the 10
+  scored nuScenes classes above threshold; FlashOcc marks a voxel occupied
+  without needing a name for it.
+
 ## What this adds
 
 ### 1. Dense geometry alongside object detection
