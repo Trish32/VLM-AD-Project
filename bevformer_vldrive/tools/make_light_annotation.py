@@ -36,6 +36,8 @@ from nuscenes import NuScenes
 from nuscenes.map_expansion.map_api import NuScenesMap
 from pyquaternion import Quaternion
 
+from dataroot import default_dataroot
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = ROOT / 'bev_outputs' / 'light_annotation'
 
@@ -90,7 +92,7 @@ def project(p_global: np.ndarray, ego_pose: dict, cam_cs: dict
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--dataroot', default='/Users/trish/Downloads/nuScenes_miniV1.0')
+    ap.add_argument('--dataroot', default=default_dataroot())
     ap.add_argument('--out-dir', default=str(DEFAULT_OUT))
     ap.add_argument('--max-range', type=float, default=60.0,
                     help='Skip fixtures further than this (m); far ones are unreadable')

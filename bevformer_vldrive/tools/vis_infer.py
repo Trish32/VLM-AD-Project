@@ -5,7 +5,7 @@ BEVFormer-Tiny visualised inference + Qwen2.5VL-7B streaming decisions.
 Usage (from tools/):
     # BEV only
     conda run -n simple_bev_vldrive python vis_infer.py \
-        --dataroot /Users/trish/Downloads/nuScenes_miniV1.0 \
+        --dataroot "$NUSCENES_DATAROOT" \
         --scene 0 --max-frames 10
 
     # BEV + VLM decisions (streaming, composite updated live)
@@ -49,6 +49,8 @@ from model import BEVFormerTiny
 from data  import NuScenesMiniLoader
 from visualizer import build_scene_canvas, make_trajectory_canvas, GROUP_COLORS, CLASS_GROUP
 from eval   import _build_remap
+
+from dataroot import default_dataroot
 
 OUT_DIR     = ROOT / 'bev_outputs'
 LATEST_PATH = str(OUT_DIR / 'latest_bev_grid.jpg')
@@ -1081,7 +1083,7 @@ def main():
     ap = argparse.ArgumentParser(
         description='BEVFormer-Tiny + Qwen2.5VL-7B streaming BEV visualisation'
     )
-    ap.add_argument('--dataroot',       default='/Users/trish/Downloads/nuScenes_miniV1.0')
+    ap.add_argument('--dataroot',       default=default_dataroot())
     ap.add_argument('--scene',          type=int,   default=0)
     ap.add_argument('--max-frames',     type=int,   default=40)
     ap.add_argument('--score-thr',      type=float, default=0.25)

@@ -15,7 +15,7 @@ Checks in order:
 Usage:
     conda run -n simple_bev_vldrive python tools/probe_sca.py \
         --checkpoint model/checkpoints/bevformer_tiny_fp16_epoch_24.pth \
-        --dataroot /Users/trish/Downloads/nuScenes_miniV1.0
+        --dataroot "$NUSCENES_DATAROOT"
 """
 from __future__ import annotations
 
@@ -36,6 +36,10 @@ from model.bevformer_tiny import BEVFormerTiny, NUSCENES_IMG_MEAN, NUSCENES_IMG_
 from model.deform_attn    import ms_deform_attn_core
 from data import NuScenesMiniLoader
 from tools.eval import _build_remap
+
+import sys as _sys; from pathlib import Path as _P
+_sys.path.insert(0, str(_P(__file__).resolve().parent.parent))
+from dataroot import default_dataroot
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -193,7 +197,7 @@ def main():
     parser.add_argument('--checkpoint',
                         default='model/checkpoints/bevformer_tiny_fp16_epoch_24.pth')
     parser.add_argument('--dataroot',
-                        default='/Users/trish/Downloads/nuScenes_miniV1.0')
+                        default=default_dataroot())
     args = parser.parse_args()
 
     if not torch.backends.mps.is_available():

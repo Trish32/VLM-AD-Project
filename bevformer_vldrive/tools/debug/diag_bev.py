@@ -13,6 +13,11 @@ from eval  import _build_remap
 from visualizer import (_global_to_pixel, _box_corners_global,
                         _draw_drivable_area, GROUP_COLORS, CLASS_GROUP, _BG_COLOR)
 
+import sys as _sys
+from pathlib import Path as _P
+_sys.path.insert(0, str(_P(__file__).resolve().parent.parent))
+from dataroot import default_dataroot
+
 PC = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
 NUSC_CAT = {
     'vehicle':                    'vehicle',
@@ -26,7 +31,7 @@ def main():
     ckpt  = torch.load('model/checkpoints/bevformer_tiny_fp16_epoch_24.pth', map_location='cpu')
     model.load_state_dict(_build_remap(ckpt.get('state_dict', ckpt)), strict=False)
 
-    loader = NuScenesMiniLoader('/Users/trish/Downloads/nuScenes_miniV1.0')
+    loader = NuScenesMiniLoader(default_dataroot())
     nusc   = loader.nusc
 
     prev_bev = None
@@ -63,7 +68,7 @@ def main():
         from nuscenes.map_expansion.map_api import NuScenesMap
         scene    = nusc.get('scene', nusc_s['scene_token'])
         loc      = nusc.get('log', scene['log_token'])['location']
-        nmap     = NuScenesMap('/Users/trish/Downloads/nuScenes_miniV1.0', loc)
+        nmap     = NuScenesMap(default_dataroot(), loc)
     except Exception as e:
         print(f"[WARN] map: {e}"); nmap = None
 

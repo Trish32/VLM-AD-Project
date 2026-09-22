@@ -17,6 +17,10 @@ from model import BEVFormerTiny
 from data  import NuScenesMiniLoader
 from eval  import _build_remap
 
+import sys as _sys; from pathlib import Path as _P
+_sys.path.insert(0, str(_P(__file__).resolve().parent.parent))
+from dataroot import default_dataroot
+
 PC_RANGE    = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
 CLASS_NAMES = ['car','truck','construction_vehicle','bus','trailer',
                'barrier','motorcycle','bicycle','pedestrian','traffic_cone']
@@ -29,7 +33,7 @@ def main():
     raw   = ckpt.get('state_dict', ckpt)
     model.load_state_dict(_build_remap(raw), strict=False)
 
-    loader = NuScenesMiniLoader('/Users/trish/Downloads/nuScenes_miniV1.0')
+    loader = NuScenesMiniLoader(default_dataroot())
     nusc   = loader.nusc
     sample = next(iter(loader.iter_scene(scene_idx=0)))
     imgs, img_metas = sample['imgs'], sample['img_metas']

@@ -54,6 +54,7 @@ from vis_infer import (
     query_light, light_crop_b64, DecisionSmoother,
     _FONT_BODY, _BG_RGB, _WHITE, _GRAY, _DECISION_COLORS, _LABELS, _LIGHT_COLORS,
 )
+from dataroot import default_dataroot
 
 OUT_DIR  = ROOT / 'bev_outputs'
 OUT_BEV  = OUT_DIR / 'composite_bev_vlm.gif'
@@ -553,7 +554,7 @@ def _intersection_scenes(nusc):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--dataroot',   default='/Users/trish/Downloads/nuScenes_miniV1.0')
+    ap.add_argument('--dataroot',   default=default_dataroot())
     ap.add_argument('--scenes',     type=int, nargs='+', default=None,
                     help='Scene indices (default: all intersection scenes)')
     ap.add_argument('--max-frames', type=int,   default=10)

@@ -23,7 +23,9 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 from vis_infer import _FONT_BODY, _load_fonts
 
-DATAROOT = '/Users/trish/Downloads/nuScenes_miniV1.0'
+from dataroot import default_dataroot
+
+DATAROOT = default_dataroot()
 OUT = ROOT / 'bev_outputs' / 'redlight_ablation.png'
 SCENE, FRAME = 'scene-0757', 0
 

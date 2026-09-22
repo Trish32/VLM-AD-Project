@@ -10,7 +10,7 @@ from the official fp16 checkpoint. Reports:
 Usage:
     python tools/eval.py \
         --checkpoint model/checkpoints/bevformer_tiny_fp16_epoch_24.pth \
-        --dataroot /Users/trish/Downloads/nuScenes_miniV1.0 \
+        --dataroot "$NUSCENES_DATAROOT" \
         [--force-cpu] [--max-total-frames N]
 
 Weight coverage from checkpoint
@@ -53,6 +53,8 @@ sys.path.insert(0, str(ROOT))
 
 from model import BEVFormerTiny
 from data import NuScenesMiniLoader
+
+from dataroot import default_dataroot
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -531,7 +533,7 @@ def main():
     parser.add_argument('--checkpoint',
                         default='model/checkpoints/bevformer_tiny_fp16_epoch_24.pth')
     parser.add_argument('--dataroot',
-                        default='/Users/trish/Downloads/nuScenes_miniV1.0')
+                        default=default_dataroot())
     parser.add_argument('--score-thr', type=float, default=0.1,
                         help='Detection score threshold')
     parser.add_argument('--max-per-sample', type=int, default=300)

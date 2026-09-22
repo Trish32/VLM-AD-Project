@@ -5,7 +5,7 @@ Produces per-frame BEV images with predicted 3-D boxes overlaid.
 
 Usage:
     python tools/infer.py \
-        --dataroot /Users/trish/Downloads/nuScenes_miniV1.0 \
+        --dataroot "$NUSCENES_DATAROOT" \
         --checkpoint model/checkpoints/bevformer_tiny_fp16_epoch_24.pth \
         [--scene 0] [--max-frames 40] [--score-thr 0.25] [--out-dir bev_outputs]
 
@@ -36,6 +36,8 @@ sys.path.insert(0, str(Path(__file__).parent))   # so eval.py can be imported
 from model import BEVFormerTiny
 from data import NuScenesMiniLoader
 from eval import _build_remap                    # extended checkpoint remapper
+
+from dataroot import default_dataroot
 
 
 # ---------------------------------------------------------------------------
@@ -448,7 +450,7 @@ def render_camera_mosaic(imgs_np: np.ndarray,
 
 def main():
     parser = argparse.ArgumentParser(description='BEVFormer-Tiny inference + BEV visualisation')
-    parser.add_argument('--dataroot',   default='/Users/trish/Downloads/nuScenes_miniV1.0')
+    parser.add_argument('--dataroot',   default=default_dataroot())
     parser.add_argument('--checkpoint', default='model/checkpoints/bevformer_tiny_fp16_epoch_24.pth')
     parser.add_argument('--scene',      type=int, default=0,
                         help='Scene index 0-9 (0=scene-0061, etc.)')

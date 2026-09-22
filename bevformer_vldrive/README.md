@@ -33,7 +33,12 @@ active. MPS needs the CPU-fallback flag for the few ops without Metal kernels:
 ```bash
 conda activate simple_bev_vldrive
 export PYTORCH_ENABLE_MPS_FALLBACK=1
+export NUSCENES_DATAROOT=/path/to/nuScenes_miniV1.0
 ```
+
+`NUSCENES_DATAROOT` is optional: every tool falls back to
+`~/Downloads/nuScenes_miniV1.0` then `./data/nuscenes`, and `--dataroot`
+overrides both. See [tools/dataroot.py](tools/dataroot.py).
 
 ### 1. Composite scene GIFs (BEV + cameras + VLM reasoning)
 
@@ -63,7 +68,7 @@ vendored anchors are for validation only.
 ```bash
 # bev_outputs/bev_xxx.png (BEV detections) and bev_outputs/cameras/cams_xxx.png
 python tools/infer.py \
-    --dataroot /Users/trish/Downloads/nuScenes_miniV1.0 \
+    --dataroot "$NUSCENES_DATAROOT" \
     --checkpoint model/checkpoints/bevformer_tiny_fp16_epoch_24.pth \
     --scene 5 --max-frames 10 --score-thr 0.25 \
     --out-dir bev_outputs --save-cams

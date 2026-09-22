@@ -17,7 +17,7 @@ exactly where CPU and MPS outputs first diverge significantly.
 Usage:
     conda run -n simple_bev_vldrive python tools/probe_mps.py \
         --checkpoint model/checkpoints/bevformer_tiny_fp16_epoch_24.pth \
-        --dataroot /Users/trish/Downloads/nuScenes_miniV1.0 \
+        --dataroot "$NUSCENES_DATAROOT" \
         [--scene 0]  [--frame 0]
 """
 from __future__ import annotations
@@ -36,6 +36,10 @@ sys.path.insert(0, str(ROOT))
 from model.bevformer_tiny import BEVFormerTiny, NUSCENES_IMG_MEAN, NUSCENES_IMG_STD
 from data import NuScenesMiniLoader
 from tools.eval import _build_remap
+
+import sys as _sys; from pathlib import Path as _P
+_sys.path.insert(0, str(_P(__file__).resolve().parent.parent))
+from dataroot import default_dataroot
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -359,7 +363,7 @@ def main():
     parser.add_argument('--checkpoint',
                         default='model/checkpoints/bevformer_tiny_fp16_epoch_24.pth')
     parser.add_argument('--dataroot',
-                        default='/Users/trish/Downloads/nuScenes_miniV1.0')
+                        default=default_dataroot())
     parser.add_argument('--scene', type=int, default=0,
                         help='Scene index (0-based within mini dataset)')
     parser.add_argument('--frame', type=int, default=0,

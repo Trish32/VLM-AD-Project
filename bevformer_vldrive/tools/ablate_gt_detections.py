@@ -48,6 +48,8 @@ from vis_infer import (DecisionSmoother, _encode_image, _format_detection_rows,
                        front_camera_b64, query_light)
 from visualizer import build_scene_canvas
 
+from dataroot import default_dataroot
+
 
 def gt_detections_to_text(nusc, sample_token: str, max_rows: int = 5,
                           forward_only: bool = True) -> str:
@@ -142,7 +144,7 @@ def swap_fields(pred_items, gt_items, velocity=False, conf=False,
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--dataroot', default='/Users/trish/Downloads/nuScenes_miniV1.0')
+    ap.add_argument('--dataroot', default=default_dataroot())
     ap.add_argument('--checkpoint',
                     default='model/checkpoints/bevformer_tiny_fp16_epoch_24.pth')
     ap.add_argument('--scenes', type=int, nargs='+', default=[4])

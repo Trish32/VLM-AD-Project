@@ -43,6 +43,8 @@ from nuscenes import NuScenes
 
 from vis_infer import front_camera_b64, light_crop_b64, query_light
 
+from dataroot import default_dataroot
+
 RANGE_BUCKETS = [(0, 15), (15, 25), (25, 35), (35, 50), (50, 1e9)]
 
 # Decisions that count as "stopping" when a red light governs the lane.
@@ -209,7 +211,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--labels', required=True, help='light_labels.jsonl from annotate.html')
-    ap.add_argument('--dataroot', default='/Users/trish/Downloads/nuScenes_miniV1.0')
+    ap.add_argument('--dataroot', default=default_dataroot())
     ap.add_argument('--ollama-url', default='http://localhost:11434')
     ap.add_argument('--ollama-model', default='qwen2.5vl:7b')
     ap.add_argument('--ollama-timeout', type=int, default=120)
