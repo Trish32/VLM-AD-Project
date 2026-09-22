@@ -63,6 +63,14 @@ Useful flags:
 
 Requires Ollama running with the VLM pulled: `ollama pull qwen2.5vl:7b`.
 
+The DiffusionDrive panel needs `assets/kmeans_plan_6.npy`, a 992-byte anchor
+vocabulary vendored here so a fresh clone renders it without generating anything
+first. If it is missing the tool prints the regeneration command and falls back
+to the two-panel layout rather than failing. Those anchors are mini-derived (22
+right / 30 left turns) — fine for pipeline validation, not for a training run;
+regenerate from full nuScenes with
+`diffusiondrive_planner/tools/gen_plan_anchors.py` if you need better ones.
+
 ### What the VLM receives
 
 Four channels, split by what each component is actually good at: the **BEV

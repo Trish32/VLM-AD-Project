@@ -279,6 +279,43 @@ def _overlay_back_top(cam_grid, reasoning, decision, light='none'):
     return out
 
 
+def _find_plan_anchors() -> Path | None:
+    """Locate kmeans_plan_6.npy, or None.
+
+    A vendored copy lives in this project's assets/ (992 bytes) so a fresh clone
+    renders the planning panel without first having to generate anything. The
+    diffusiondrive_planner path is checked second for anyone regenerating them
+    from full nuScenes -- mini-derived anchors cluster only 22 right and 30 left
+    turns, which is fine for pipeline validation and not for anything else.
+    """
+    for c in (ROOT / 'assets' / 'kmeans_plan_6.npy',
+              ROOT.parent / 'diffusiondrive_planner/data/kmeans/kmeans_plan_6.npy'):
+        if c.exists():
+            return c
+    return None
+
+
+def _load_planner():
+    """(planner, safety_filter), or (None, None) if the panel cannot be built."""
+    sys.path.insert(0, str(ROOT.parent))
+    try:
+        from e2e_pipeline.safety_filter import SafetyFilter
+        from e2e_pipeline.vlm_planner import intent_conditioned_planner
+    except ImportError as exc:
+        print(f'[WARN] e2e_pipeline unavailable ({exc}) — planning panel skipped.')
+        return None, None
+
+    anchors = _find_plan_anchors()
+    if anchors is None:
+        print('[WARN] kmeans_plan_6.npy not found — planning panel skipped.\n'
+              '       Regenerate with:\n'
+              '         python ../diffusiondrive_planner/tools/gen_plan_anchors.py \\\n'
+              '             --dataroot <nuScenes> --version v1.0-mini \\\n'
+              '             --out ../diffusiondrive_planner/data/kmeans --mode per_command')
+        return None, None
+    return intent_conditioned_planner(str(anchors)), SafetyFilter()
+
+
 def _label_panel(panel, text):
     """Draw a camera-cell-style label (dark box + light text) at bottom-left."""
     out = panel.copy()
@@ -353,13 +390,10 @@ def _render_scene(model, nusc, loader, scene_idx, args, device, log_path=None):
     smoother = DecisionSmoother()
     prev_decision: dict | None = None
 
-    # DiffusionDrive anchors + the safety filter, built once per scene.
-    sys.path.insert(0, str(ROOT.parent))
-    from e2e_pipeline.safety_filter import SafetyFilter
-    from e2e_pipeline.vlm_planner import intent_conditioned_planner
-    anchors = ROOT.parent / 'diffusiondrive_planner/data/kmeans/kmeans_plan_6.npy'
-    dd_planner = intent_conditioned_planner(str(anchors))
-    safety_filter = SafetyFilter()
+    # DiffusionDrive anchors + the safety filter, built once per scene. Missing
+    # anchors degrade to the two-panel layout rather than crashing: the tool's
+    # primary job is the BEV + VLM composite, and the planning panel is an extra.
+    dd_planner, safety_filter = _load_planner()
     ego_history, comp_frames, cam_frames = [], [], []
 
     with torch.no_grad():
@@ -477,17 +511,18 @@ def _render_scene(model, nusc, loader, scene_idx, args, device, log_path=None):
                 log_fh.flush()
 
             # ── Assemble: cameras on top, three planning panels beneath ────────
-            dd = _dd_panel(canvas.shape[0], dd_planner, safety_filter, out,
-                           lidar2ego_yaw, args.score_thr, decision, ego_speed,
-                           nusc=nusc, sample_token=sample_token,
-                           ego_xy=_now, ego_yaw=Quaternion(_ep['rotation'])
-                           .yaw_pitch_roll[0])
             pred_panel = _label_panel(canvas, 'pred BEV')
             traj_panel = _label_panel(trail_canvas, 'GT trajectory')
-            dd_panel_l = _label_panel(dd, 'DiffusionDrive plan + safety filter')
             sep = np.full((canvas.shape[0], 2, 3), 255, dtype=np.uint8)
-            bottom = np.concatenate([pred_panel, sep, traj_panel, sep,
-                                     dd_panel_l], axis=1)
+            panels = [pred_panel, sep, traj_panel]
+            if dd_planner is not None:
+                dd = _dd_panel(canvas.shape[0], dd_planner, safety_filter, out,
+                               lidar2ego_yaw, args.score_thr, decision, ego_speed,
+                               nusc=nusc, sample_token=sample_token,
+                               ego_xy=_now, ego_yaw=Quaternion(_ep['rotation'])
+                               .yaw_pitch_roll[0])
+                panels += [sep, _label_panel(dd, 'DiffusionDrive plan + safety filter')]
+            bottom = np.concatenate(panels, axis=1)
 
             grid_out = _overlay_back_top(cam_grid, reasoning, decision, light)
             if grid_out.shape[1] != bottom.shape[1]:
