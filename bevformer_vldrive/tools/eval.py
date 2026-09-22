@@ -45,6 +45,7 @@ from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
 from nuscenes.eval.detection.evaluate import NuScenesEval
 from nuscenes.eval.detection.config import config_factory
+from nuscenes.eval.detection.utils import category_to_detection_name
 from nuscenes.utils.splits import create_splits_scenes
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -85,18 +86,49 @@ NUSC_CAT_MAP = {
 
 CLASS_IDX = {n: i for i, n in enumerate(CLASS_NAMES)}
 
+# Fallbacks used when the predicted speed is ambiguous.  These match mmdet3d's
+# NuScenesDataset.DefaultAttribute exactly — note pedestrian defaults to *moving* and
+# bus to *moving*, which is the opposite of the intuitive guess and matters because
+# mAAE is one of the five TP terms in NDS.
 ATTR_DEFAULT = {
     'car':                   'vehicle.parked',
     'truck':                 'vehicle.parked',
     'construction_vehicle':  'vehicle.parked',
-    'bus':                   'vehicle.parked',
+    'bus':                   'vehicle.moving',
     'trailer':               'vehicle.parked',
     'motorcycle':            'cycle.without_rider',
     'bicycle':               'cycle.without_rider',
-    'pedestrian':            'pedestrian.standing',
+    'pedestrian':            'pedestrian.moving',
     'barrier':               '',
     'traffic_cone':          '',
 }
+
+# Speed above which a detection counts as moving (m/s), per the official conversion.
+ATTR_SPEED_THR = 0.2
+
+
+def velocity_to_attribute(cls_name: str, vx: float, vy: float) -> str:
+    """Derive the nuScenes attribute from the *predicted* velocity.
+
+    The model regresses (vx, vy) at reg indices 8-9, so pinning every box to a
+    constant attribute throws that signal away and guarantees a bad mAAE on any
+    class whose default is wrong for the scene — a stationary-default bus in moving
+    traffic scores attr_err = 1.0 on every frame.
+
+    Reproduces mmdet3d's `_format_bbox` heuristic so the numbers stay comparable to
+    the published ones.
+    """
+    if math.sqrt(vx * vx + vy * vy) > ATTR_SPEED_THR:
+        if cls_name in ('car', 'construction_vehicle', 'bus', 'truck', 'trailer'):
+            return 'vehicle.moving'
+        if cls_name in ('bicycle', 'motorcycle'):
+            return 'cycle.with_rider'
+        return ATTR_DEFAULT[cls_name]
+    if cls_name == 'pedestrian':
+        return 'pedestrian.standing'
+    if cls_name == 'bus':
+        return 'vehicle.stopped'
+    return ATTR_DEFAULT[cls_name]
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +395,9 @@ def preds_to_nuscenes(dets: list[dict], sample_token: str,
             'velocity':        [float(v_global[0]), float(v_global[1])],
             'detection_name':  cls_name,
             'detection_score': d['score'],
-            'attribute_name':  ATTR_DEFAULT[cls_name],
+            # Derived from the predicted velocity, not a per-class constant.
+            'attribute_name':  velocity_to_attribute(
+                cls_name, float(v_global[0]), float(v_global[1])),
         })
     return records
 
@@ -702,11 +736,37 @@ def main():
                 json.dump({'meta': meta, 'results': rd}, f)
             return path
 
+        gt_counts: dict = {}
         path_val   = _write_submission(mini_val_scenes,   'results_mini_val.json')
         path_train = _write_submission(mini_train_scenes, 'results_mini_train.json')
 
         import shutil
         shutil.copy(path_val, os.path.join(args.out_dir, 'nuscenes_results.json'))
+
+        def _gt_class_counts(scene_names: set) -> dict:
+            """GT instance count per detection class over `scene_names`.
+
+            nuScenes-mini is small enough that a whole detection class can be absent
+            from a split: mini_val (scene-0103, scene-0916) contains zero trailer,
+            construction_vehicle and barrier annotations.  The devkit still scores
+            those classes AP = 0 and averages them into a 10-class mean, which
+            mechanically deflates mAP by 30% on this split.  Reporting the count
+            alongside the AP is what keeps that from reading as a model failure.
+            """
+            counts: dict = {}
+            for sc in nusc.scene:
+                if sc['name'] not in scene_names:
+                    continue
+                tok = sc['first_sample_token']
+                while tok:
+                    s = nusc.get('sample', tok)
+                    for ann_tok in s['anns']:
+                        name = category_to_detection_name(
+                            nusc.get('sample_annotation', ann_tok)['category_name'])
+                        if name:
+                            counts[name] = counts.get(name, 0) + 1
+                    tok = s['next']
+            return counts
 
         def _run_nusc_eval(result_path: str, eval_set: str, out_subdir: str):
             os.makedirs(out_subdir, exist_ok=True)
@@ -720,18 +780,39 @@ def main():
             )
             return ev.evaluate()[0]
 
-        for eval_set, result_path in [('mini_val',   path_val),
-                                       ('mini_train', path_train)]:
+        for eval_set, result_path, scenes in [
+                ('mini_val',   path_val,   mini_val_scenes),
+                ('mini_train', path_train, mini_train_scenes)]:
             print(f'\n{"=" * 60}')
             print(f'nuScenes Detection Evaluation — {eval_set}')
             print('=' * 60)
             m = _run_nusc_eval(result_path, eval_set,
                                os.path.join(args.out_dir, eval_set))
             all_metrics[eval_set] = m
+            gt_counts[eval_set] = _gt_class_counts(scenes)
+
             print(f'\n  NDS : {m.nd_score:.4f}   mAP : {m.mean_ap:.4f}')
-            print('  Per-class AP:')
+            print('  Per-class AP  (GT = instances present in this split):')
             for cls_name, ap in sorted(m.mean_dist_aps.items()):
-                print(f'    {cls_name:<25s}: {ap:.4f}')
+                n_gt = gt_counts[eval_set].get(cls_name, 0)
+                note = '   <-- no GT, AP=0 is vacuous' if n_gt == 0 else ''
+                print(f'    {cls_name:<25s}: {ap:.4f}   GT={n_gt:5d}{note}')
+
+            # The honest headline for a split that is missing whole classes.
+            present = [c for c in m.mean_dist_aps
+                       if gt_counts[eval_set].get(c, 0) > 0]
+            if len(present) < len(m.mean_dist_aps):
+                mAP_present = float(np.mean([m.mean_dist_aps[c] for c in present]))
+                absent = sorted(set(m.mean_dist_aps) - set(present))
+                print(f'\n  mAP over the {len(present)}/{len(m.mean_dist_aps)} classes '
+                      f'present in {eval_set}: {mAP_present:.4f}')
+                print(f'    (absent: {", ".join(absent)})')
+
+            # TP error breakdown — the fingerprint that localises a bad port:
+            # scale+orient bad with translation fine means a dims/yaw convention bug,
+            # low velocity error means the temporal path is healthy, etc.
+            print('  TP errors:', '  '.join(
+                f'{k}={v:.4f}' for k, v in sorted(m.tp_errors.items())))
 
     # ---- Summary table -----------------------------------------------------
     print('\n' + '=' * 60)
@@ -759,10 +840,20 @@ def main():
     }
     if all_metrics:
         for split_name, m in all_metrics.items():
+            counts = gt_counts.get(split_name, {})
+            present = [c for c in m.mean_dist_aps if counts.get(c, 0) > 0]
             summary[split_name] = {
                 'NDS': m.nd_score,
                 'mAP': m.mean_ap,
                 'per_class_AP': m.mean_dist_aps,
+                'gt_counts': counts,
+                'classes_present': len(present),
+                # mAP restricted to classes that actually occur in the split — the
+                # comparable number when whole classes are missing from mini.
+                'mAP_present_classes': (
+                    float(np.mean([m.mean_dist_aps[c] for c in present]))
+                    if present else None),
+                'tp_errors': dict(m.tp_errors),
             }
     with open(os.path.join(args.out_dir, 'summary.json'), 'w') as f:
         json.dump(summary, f, indent=2)

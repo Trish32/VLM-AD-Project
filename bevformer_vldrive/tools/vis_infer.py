@@ -77,23 +77,343 @@ def _load_fonts(size_body=14, size_title=17):
 _, _FONT_BODY = _load_fonts()
 
 # ── Qwen2.5VL system prompt ────────────────────────────────────────────────────
-_SYSTEM_PROMPT = (
-    "Analyze this top-down Bird's Eye View (BEV) map of a driving scene.\n"
-    "Canvas is global-frame, north-up.  Colour legend:\n"
+_BEV_LEGEND = (
     "  RED shapes     — vehicles (car, truck, bus, motorcycle, bicycle)\n"
     "  BLUE shapes    — pedestrians\n"
     "  CYAN shapes    — barriers / static obstacles\n"
     "  MAGENTA shapes — traffic cones\n"
     "  BLUE circle + white arrow — ego vehicle; arrow = heading direction.\n"
-    "  Teal surface   — drivable road.\n\n"
-    "Determine if there is a blocking hazard ahead and decide:\n"
-    "[PROCEED, SLOW_DOWN, YIELD, STOP]\n\n"
+    "  Teal surface   — drivable road.\n"
+)
+
+# The LIGHT line is only offered when the forward camera is actually in the payload.
+# Asking for it BEV-only invites fabrication, and it does: with --no-front-cam the
+# model confidently answered "LIGHT: red / DECISION: STOP" on a frame it had no
+# camera view of at all.  Never ask a model for a field it has no input for.
+_OUTPUT_CONTRACT_CAM = (
+    "Reply in EXACTLY this format (no extra lines):\n"
+    "LIGHT: <red | yellow | green | none>   <- read from IMAGE 2 only; if no\n"
+    "       traffic light is visible in IMAGE 2, you MUST answer none\n"
+    "REASONING: <one sentence>\n"
+    "DECISION: <PROCEED | SLOW_DOWN | YIELD | STOP>"
+)
+
+_OUTPUT_CONTRACT_BEV = (
     "Reply in EXACTLY this format (no extra lines):\n"
     "REASONING: <one sentence>\n"
     "DECISION: <PROCEED | SLOW_DOWN | YIELD | STOP>"
 )
 
+
+# Stage 1 of the two-stage query: the camera alone, asked one thing only.
+#
+# WHY TWO STAGES.  Measured on scene-0757 (red light, empty road): with the BEV
+# and the camera in ONE call, adding even a SINGLE row of detection text flips
+# the answer from "LIGHT: red / STOP" to "LIGHT: none / PROCEED".  The sweep is
+# unambiguous — rows=0 reads the light, rows=1..5 all miss it, at nearly
+# identical token counts.  So this is not a context-length limit; authoritative
+# text redirects the model off the visual task wholesale.  One call cannot do
+# perception-from-pixels and reasoning-over-numbers at the same time, so we stop
+# asking it to.
+_LIGHT_PROMPT = (
+    "This is the forward-facing camera of a car.\n"
+    "Is there a traffic light governing this lane? If yes, what colour is lit?\n"
+    "Reply with EXACTLY one word: red, yellow, green, or none."
+)
+
+
+# Cache of per-location fixture geometry; the map JSONs are a few MB each and the
+# same location repeats across every frame of a scene.
+_FIXTURE_CACHE: dict = {}
+
+
+def light_crop_b64(nusc, sample_token: str, dataroot: str,
+                   crop_out: int = 384, ref_range: float = 25.0,
+                   base_half: int = 170, max_range: float = 60.0) -> str | None:
+    """A tight crop of CAM_FRONT centred on the traffic light, or None.
+
+    The map expansion knows where every fixture is, so there is no need to make
+    the VLM hunt for a signal head in a downscaled wide shot. Projecting the
+    fixture with the ego pose and cropping around it recovers exactly the detail
+    that range destroys: asked in isolation the model reads a tight crop
+    correctly every time, while the same light at 32 m inside a 640 px frame was
+    missed.
+
+    The window scales as 1/range so a light at 50 m ends up the same apparent
+    size as one at 15 m; with a fixed window the far ones stay unreadable, which
+    defeats the purpose.
+
+    Returns None when no fixture projects into view — the caller should then fall
+    back to the full frame rather than sending a meaningless crop.
+    """
+    try:
+        from make_light_annotation import fixture_records, project
+
+        scene = nusc.get('scene', nusc.get('sample', sample_token)['scene_token'])
+        loc = nusc.get('log', scene['log_token'])['location']
+        if loc not in _FIXTURE_CACHE:
+            _FIXTURE_CACHE[loc] = fixture_records(dataroot, loc)
+        fixtures = _FIXTURE_CACHE[loc]
+        if not fixtures:
+            return None
+
+        sd = nusc.get('sample_data',
+                      nusc.get('sample', sample_token)['data']['CAM_FRONT'])
+        ep = nusc.get('ego_pose', sd['ego_pose_token'])
+        cs = nusc.get('calibrated_sensor', sd['calibrated_sensor_token'])
+
+        best = None
+        for fx in fixtures:
+            p = np.array([fx['xy'][0], fx['xy'][1], ep['translation'][2] + fx['z']])
+            pr = project(p, ep, cs)
+            if pr is None:
+                continue
+            u, v, depth = pr
+            if not (60 <= u < 1600 - 60 and 60 <= v < 900 - 60):
+                continue
+            if depth > max_range:
+                continue
+            if best is None or depth < best[2]:
+                best = (u, v, depth)
+        if best is None:
+            return None
+
+        img = cv2.imread(str(Path(dataroot) / sd['filename']))
+        if img is None:
+            return None
+        u, v, depth = best
+        half = int(np.clip(base_half * ref_range / max(depth, 1.0), 70, 300))
+        x0 = int(np.clip(u - half, 0, 1600 - 2 * half))
+        y0 = int(np.clip(v - half, 0, 900 - 2 * half))
+        crop = img[y0:y0 + 2 * half, x0:x0 + 2 * half]
+        if crop.shape[0] < 40 or crop.shape[1] < 40:
+            return None
+        crop = cv2.resize(crop, (crop_out, crop_out), interpolation=cv2.INTER_CUBIC)
+        ok, buf = cv2.imencode('.jpg', crop, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        return base64.b64encode(buf.tobytes()).decode('utf-8') if ok else None
+    except Exception as exc:
+        print(f'[WARN] light crop unavailable ({exc}) — using the wide frame only.')
+        return None
+
+
+_LIGHT_PROMPT_CROPPED = (
+    "Two views from a car's forward camera.\n"
+    "IMAGE 1 — the wide view: use it to judge whether a signal governs THIS lane.\n"
+    "IMAGE 2 — a zoomed crop centred on the traffic light in that scene.\n"
+    "What colour is lit on the light governing this lane?\n"
+    "Reply with EXACTLY one word: red, yellow, green, or none."
+)
+
+
+def query_light(cam_b64: str, model: str, base_url: str, timeout: int,
+                stats: dict | None = None, crop_b64: str | None = None) -> str:
+    """Stage 1 — read the traffic light from the camera, nothing else in context.
+
+    With `crop_b64` the wide frame and a map-projected zoom go in together: the
+    wide view carries lane context (which signal is mine), the crop carries the
+    state that range destroys. Without it this is the single-image query.
+    """
+    images = [cam_b64] + ([crop_b64] if crop_b64 else [])
+    payload = json.dumps({
+        "model": model,
+        "prompt": _LIGHT_PROMPT_CROPPED if crop_b64 else _LIGHT_PROMPT,
+        "images": images,
+        "stream": False, "options": {"temperature": 0.0, "num_predict": 8},
+    }).encode("utf-8")
+    req = urllib.request.Request(f"{base_url}/api/generate", data=payload,
+                                 headers={"Content-Type": "application/json"},
+                                 method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        obj = json.loads(resp.read())
+    if stats is not None:
+        stats.update(light_prefill_ms=obj.get("prompt_eval_duration", 0) / 1e6,
+                     light_tokens=obj.get("prompt_eval_count", 0))
+    tok = obj.get("response", "").strip().lower()
+    return next((c for c in _VALID_LIGHTS if c in tok), "none")
+
+
+def build_prompt(det_text: str | None = None, with_front_cam: bool = False,
+                 light_state: str | None = None,
+                 prev: dict | None = None) -> str:
+    """Assemble the VLM prompt for the enabled input channels.
+
+    The division of labour is the point of this function.  A rendered BEV is a
+    lossy, synthetic picture of geometry the pipeline has *already measured* — so
+    asking the VLM to read distances off it is asking the one component that is bad
+    at metric estimation to redo work the detector did exactly.  Meanwhile traffic
+    light state, brake lights, signage and pedestrian intent exist nowhere in the
+    BEV at all, which makes a correct decision at a red light with clear road ahead
+    structurally impossible.
+
+    So: detections go in as text and are declared authoritative, the front camera
+    goes in as a second image and is declared the only source of semantics.
+    """
+    parts = []
+
+    if with_front_cam:
+        parts.append(
+            "You are a driving assistant. You are given TWO images.\n\n"
+            "IMAGE 1 — top-down Bird's Eye View (BEV) map, global-frame, north-up.\n"
+            f"{_BEV_LEGEND}\n"
+            "IMAGE 2 — the forward-facing camera (CAM_FRONT).\n"
+        )
+    else:
+        parts.append(
+            "Analyze this top-down Bird's Eye View (BEV) map of a driving scene.\n"
+            "Canvas is global-frame, north-up.  Colour legend:\n"
+            f"{_BEV_LEGEND}"
+        )
+
+    # Stage-1 result arrives as TEXT, not as a picture to re-read.  The camera has
+    # already been looked at by a dedicated call; asking this call to look again
+    # is what fails (see the note on _LIGHT_PROMPT).
+    if light_state and light_state != "none":
+        parts.append(
+            f"\nTRAFFIC LIGHT GOVERNING YOUR LANE: **{light_state.upper()}**\n"
+            "(read from the forward camera; treat this as fact).\n"
+        )
+    elif light_state == "none":
+        parts.append("\nTRAFFIC LIGHT: none visible in the forward camera.\n")
+
+    if with_front_cam:
+        parts.append(
+            "\nAlso use IMAGE 2 for what the BEV physically cannot represent:\n"
+            "  brake lights, turn signals, road signs, construction markings,\n"
+            "  and whether a pedestrian is about to step out.\n"
+        )
+
+    if det_text:
+        parts.append(
+            "\nTHEN use these MEASURED DETECTIONS (authoritative — they come from\n"
+            "the 3-D detector, not from the pictures. Do NOT estimate distances or\n"
+            "speeds from the images; use these numbers). Forward hemisphere only:\n"
+            f"{det_text}\n"
+        )
+
+    # Temporal context. Every frame was previously an independent query, which is
+    # why the decision stream jitters on scenes that barely change. Stating what
+    # was decided a moment ago costs a handful of text tokens and gives the model
+    # a reason to stay put unless something actually changed.  Deliberately framed
+    # as evidence, not as an instruction to agree — anchoring it too hard would
+    # trade jitter for an inability to react.
+    if prev and prev.get('decision') and prev['decision'] != 'UNKNOWN':
+        parts.append(f"\nPREVIOUS FRAME (0.5 s ago): decided {prev['decision']}")
+        if prev.get('light') and prev['light'] != 'none':
+            parts.append(f", light was {prev['light']}")
+        if prev.get('reasoning'):
+            parts.append(f'\n  because: "{prev["reasoning"]}"')
+        parts.append("\nKeep that decision unless the scene has actually changed.\n")
+
+    parts.append("\nDetermine if there is a blocking hazard ahead and decide:\n"
+                 "[PROCEED, SLOW_DOWN, YIELD, STOP]\n")
+    if light_state in ("red", "yellow"):
+        parts.append(
+            f"A {light_state} light governing your lane means STOP even if the\n"
+            "road ahead is completely clear. This overrides the detections.\n")
+    # The LIGHT field is only requested when stage 1 supplied one; asking for it
+    # with no camera evidence produced confident fabrication ("LIGHT: red" on a
+    # BEV-only payload).
+    parts.append(f"\n{_OUTPUT_CONTRACT_CAM if light_state is not None else _OUTPUT_CONTRACT_BEV}")
+    return "".join(parts)
+
+
+# Kept for callers that want the plain BEV-only prompt (and for the cached-decision
+# path in make_composite_gif.py, which must not change behaviour when --no-vl).
+_SYSTEM_PROMPT = build_prompt()
+
 _VALID_DECISIONS = {"PROCEED", "SLOW_DOWN", "YIELD", "STOP"}
+_VALID_LIGHTS = ("red", "yellow", "green", "none")
+# "none" is deliberately absent — an unlit chip would just be visual noise on the
+# overwhelming majority of frames that have no signal in view.
+_LIGHT_COLORS = {
+    "red":    (230,  60,  60),
+    "yellow": (230, 200,  60),
+    "green":  ( 70, 220, 110),
+}
+# ── Temporal hysteresis on the decision stream ─────────────────────────────────
+
+# Ordered by how much caution each implies. UNKNOWN sits at SLOW_DOWN: a parse
+# failure should not read as "proceed".
+_SEVERITY = {'PROCEED': 0, 'SLOW_DOWN': 1, 'UNKNOWN': 1, 'YIELD': 2, 'STOP': 3}
+
+
+class DecisionSmoother:
+    """Latch severity across frames so one noisy call cannot flip the output.
+
+    The need is measured, not theoretical.  scene-0757 frame 1 returned STOP on
+    one run and PROCEED on the next from identical inputs (decision temperature
+    is 0.1, so the call is not deterministic), and the original logs show
+    STOP -> PROCEED -> SLOW_DOWN inside 1.5 s on a barely-changing scene.  No
+    prompt change fixes that; it is sampling noise on a per-frame independent
+    query, and it belongs outside the model.
+
+    The asymmetry is deliberate and is the whole point:
+
+      * ESCALATION is immediate.  The first frame that says STOP, we stop.  Making
+        caution wait for confirmation would be the one failure mode worth avoiding.
+      * DE-ESCALATION needs `release_frames` consecutive quieter frames before it
+        takes effect, so a single optimistic sample cannot release a stop.
+      * STOP additionally holds for `stop_latch` frames regardless, because at
+        2 Hz a one-frame stop is not physically actionable anyway.
+
+    Pure post-processing: no extra model calls, no added latency.
+    """
+
+    def __init__(self, release_frames: int = 2, stop_latch: int = 2) -> None:
+        self.release_frames = int(release_frames)
+        self.stop_latch = int(stop_latch)
+        self.held: str | None = None
+        self._quieter_run = 0
+        self._stop_age = 0
+
+    def update(self, raw: str) -> str:
+        """Feed one raw decision, get the decision to act on.
+
+        A parse failure resolves to SLOW_DOWN rather than propagating UNKNOWN:
+        the output of this class is meant to be executed, and "UNKNOWN" is not a
+        thing a controller can do.  SLOW_DOWN is the conservative reading at the
+        same severity, so an unparseable frame slows the car instead of either
+        stalling it or — worse — reading as permission to proceed.
+        """
+        if raw not in _SEVERITY or raw == 'UNKNOWN':
+            raw = 'SLOW_DOWN'
+        if self.held is None:
+            self.held = raw
+            self._stop_age = 0 if raw != 'STOP' else 1
+            return self.held
+
+        if _SEVERITY[raw] > _SEVERITY[self.held]:
+            self.held = raw                      # escalate at once
+            self._quieter_run = 0
+            self._stop_age = 1 if raw == 'STOP' else 0
+            return self.held
+
+        if _SEVERITY[raw] == _SEVERITY[self.held]:
+            self._quieter_run = 0
+            if self.held == 'STOP':
+                self._stop_age += 1
+            return self.held
+
+        # Quieter than what we are holding — require sustained agreement, and
+        # never release a STOP before its latch has expired.
+        self._quieter_run += 1
+        if self.held == 'STOP':
+            self._stop_age += 1
+            if self._stop_age < self.stop_latch:
+                return self.held
+        if self._quieter_run >= self.release_frames:
+            self.held = raw
+            self._quieter_run = 0
+            self._stop_age = 0
+        return self.held
+
+    def reset(self) -> None:
+        """Clear between scenes — holding a stop across a cut is meaningless."""
+        self.held = None
+        self._quieter_run = 0
+        self._stop_age = 0
+
+
 _DECISION_COLORS = {
     "PROCEED":   (80,  220,  80),
     "SLOW_DOWN": (220, 220,  50),
@@ -139,12 +459,22 @@ def _overlay_vl_text(panel: np.ndarray, text: str) -> np.ndarray:
     draw = ImageDraw.Draw(img)
     pad  = 8
 
-    reasoning, decision = _parse_response(text)
+    reasoning, decision, light = _parse_response(text)
     if not reasoning:
         reasoning = text.strip()
 
     draw.line([(0, y0), (W, y0)], fill=(60, 100, 100), width=1)
     draw.text((pad, y0 + 4), "REASONING", font=_FONT_BODY, fill=_WHITE)
+
+    # Traffic-light chip, right-aligned on the header row.  This is the one piece
+    # of information that only exists because the forward camera is in the payload,
+    # so showing it is what makes the modality fix visible in the rendered output.
+    if light in _LIGHT_COLORS:
+        chip = f"LIGHT {light.upper()}"
+        cw = int(draw.textlength(chip, font=_FONT_BODY))
+        draw.text((W - pad - cw, y0 + 4), chip, font=_FONT_BODY,
+                  fill=_LIGHT_COLORS[light])
+
     y = y0 + 20
     for ln in _wrap(reasoning, wrap_cols)[:3]:
         draw.text((pad, y), ln, font=_FONT_BODY, fill=_GRAY)
@@ -426,20 +756,204 @@ def _encode_image(path: str) -> str:
         return base64.b64encode(fh.read()).decode("utf-8")
 
 
-def _query_ollama_streaming(b64: str, model: str, base_url: str,
-                              timeout: int, on_update, update_every: int = 6
+# ── Metric state as text ───────────────────────────────────────────────────────
+
+# Same PC_RANGE the BEV grid and the visualiser use — keep in sync or the text and
+# the picture will disagree about where things are.
+_PC_RANGE = [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+
+
+def _bearing_label(x: float, y: float) -> str:
+    """Human-readable bearing in the ego frame (+x forward, +y left)."""
+    deg = math.degrees(math.atan2(y, x))
+    if -15 <= deg <= 15:
+        return "ahead"
+    if 15 < deg <= 60:
+        return "front-left"
+    if 60 < deg <= 120:
+        return "left"
+    if deg > 120:
+        return "behind-left"
+    if -60 <= deg < -15:
+        return "front-right"
+    if -120 <= deg < -60:
+        return "right"
+    return "behind-right"
+
+
+def _format_detection_rows(items, max_rows: int = 5,
+                           forward_only: bool = True) -> str:
+    """Render (class, x, y, vx, vy, score) ego-frame tuples as the metric block.
+
+    Shared by the predicted and ground-truth paths so an ablation between them
+    measures DETECTION QUALITY and not text layout. Any change here lands on both
+    arms simultaneously, which is the point.
+
+    x forward, y left, metres; vx/vy in m/s in the same frame.
+    """
+    rows = []
+    for name, x, y, vx, vy, score in items:
+        rng = math.hypot(x, y)
+        if rng < 1e-3 or rng > 60.0:
+            continue
+        # Drop anything behind the ego.  Two reasons, and the second is the one
+        # that actually bit: objects to the rear cannot be a *blocking hazard
+        # ahead*, and — measured on scene-0757 — a long detection list crowds the
+        # camera out of the model's attention entirely.  With 8 rows (5 of them
+        # "behind-*") it answered "no traffic lights visible" on a frame with a
+        # plainly visible red light; trimmed to the forward hemisphere it reads
+        # the light correctly.  Text tokens compete with visual ones.
+        if forward_only and abs(math.degrees(math.atan2(y, x))) > 100.0:
+            continue
+        speed = math.hypot(vx, vy)
+        # Radial component along the ego->object ray; negative means closing.
+        v_radial = (vx * x + vy * y) / rng
+        if speed < 0.5:
+            motion = "stationary"
+        elif v_radial < -0.5:
+            motion = f"closing {abs(v_radial):.1f} m/s"
+        elif v_radial > 0.5:
+            motion = f"receding {v_radial:.1f} m/s"
+        else:
+            motion = f"crossing {speed:.1f} m/s"
+        rows.append((rng, f"  {name:<12s} {rng:5.1f} m "
+                          f"{_bearing_label(x, y):<12s} "
+                          f"| {motion:<18s} | conf {score:.2f}"))
+    if not rows:
+        return "  (none above threshold)"
+    rows.sort(key=lambda t: t[0])
+    out = [line for _, line in rows[:max_rows]]
+    if len(rows) > max_rows:
+        out.append(f"  ... and {len(rows) - max_rows} more further away")
+    return "\n".join(out)
+
+
+def detections_to_text(cls_logits: torch.Tensor,
+                       reg_preds: torch.Tensor,
+                       ref_pts: torch.Tensor,
+                       score_thr: float = 0.25,
+                       lidar2ego_yaw: float = 0.0,
+                       max_rows: int = 5,
+                       forward_only: bool = True) -> str:
+    """Compact metric summary of the detections, in the EGO frame.
+
+    Mirrors `visualizer._draw_detections` exactly — same top-200-then-threshold
+    selection, same log-encoded size decode, same reference-point denormalisation —
+    so the text and the rendered canvas can never disagree.  The one deliberate
+    difference is the frame: the canvas draws in global/north-up because it overlays
+    the map, while the VLM needs ego-relative ("12 m ahead") to reason about *my*
+    path.  Rotating by lidar2ego_yaw is what converts between them.
+
+    Sorted by range so truncation at `max_rows` drops the least relevant objects.
+    """
+    scores, labels = cls_logits.float().sigmoid().max(-1)
+    order = scores.argsort(descending=True)[:200]
+    idxs = [int(i) for i in order if float(scores[i]) > score_thr]
+    if not idxs:
+        return "  (none above threshold)"
+
+    return _format_detection_rows(
+        detection_items(cls_logits, reg_preds, ref_pts, score_thr, lidar2ego_yaw),
+        max_rows=max_rows, forward_only=forward_only)
+
+
+def detection_items(cls_logits: torch.Tensor, reg_preds: torch.Tensor,
+                    ref_pts: torch.Tensor, score_thr: float = 0.25,
+                    lidar2ego_yaw: float = 0.0) -> list[tuple]:
+    """Ego-frame (class, x, y, vx, vy, score) tuples behind `detections_to_text`.
+
+    Split out so an ablation can replace one field — swapping GT velocities onto
+    predicted positions, say — without duplicating the LiDAR->ego rotation and
+    risking the two paths drifting apart.
+    """
+    scores, labels = cls_logits.float().sigmoid().max(-1)
+    order = scores.argsort(descending=True)[:200]
+    idxs = [int(i) for i in order if float(scores[i]) > score_thr]
+
+    c_l2e, s_l2e = math.cos(lidar2ego_yaw), math.sin(lidar2ego_yaw)
+    items = []
+    for i in idxs:
+        r, p = reg_preds[i].float(), ref_pts[i].float()
+        x_lid = float(p[0]) * (_PC_RANGE[3] - _PC_RANGE[0]) + _PC_RANGE[0]
+        y_lid = float(p[1]) * (_PC_RANGE[4] - _PC_RANGE[1]) + _PC_RANGE[1]
+        vx_lid, vy_lid = float(r[8]), float(r[9])
+        # LiDAR -> ego: +x forward, +y left.
+        items.append((
+            CLASS_NAMES[int(labels[i])],
+            c_l2e * x_lid - s_l2e * y_lid,
+            s_l2e * x_lid + c_l2e * y_lid,
+            c_l2e * vx_lid - s_l2e * vy_lid,
+            s_l2e * vx_lid + c_l2e * vy_lid,
+            float(scores[i]),
+        ))
+    return items
+
+
+# ── Front camera ───────────────────────────────────────────────────────────────
+
+def front_camera_b64(nusc, sample_token: str, dataroot: str,
+                     max_width: int = 640) -> str | None:
+    """CAM_FRONT as a base64 JPEG, downscaled.
+
+    Qwen2.5-VL uses dynamic resolution, so token count scales with pixel area —
+    the image size is the single biggest lever on prefill latency.  1600x900 is far
+    more than the task needs: traffic-light *state* is a coloured blob that survives
+    aggressive downscaling, and brake lights and construction markings likewise.
+    Sign *text* does not survive, but sign *presence* does.  640 px wide is roughly
+    a 6x reduction in tokens against the native frame.
+    """
+    try:
+        sd_token = nusc.get('sample', sample_token)['data']['CAM_FRONT']
+        img_path = Path(dataroot) / nusc.get('sample_data', sd_token)['filename']
+        img = cv2.imread(str(img_path))
+        if img is None:
+            return None
+        h, w = img.shape[:2]
+        if w > max_width:
+            img = cv2.resize(img, (max_width, int(round(h * max_width / w))),
+                             interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        if not ok:
+            return None
+        return base64.b64encode(buf.tobytes()).decode('utf-8')
+    except Exception as exc:                      # missing file, bad token, ...
+        print(f'[WARN] front camera unavailable ({exc}) — BEV-only this frame.')
+        return None
+
+
+def _query_ollama_streaming(b64, model: str, base_url: str,
+                              timeout: int, on_update, update_every: int = 6,
+                              prompt: str | None = None,
+                              stats: dict | None = None,
+                              temperature: float = 0.1,
+                              seed: int | None = None,
                               ) -> str:
     """
     Stream from Ollama /api/generate.
     Calls on_update(accumulated_text) every *update_every* tokens and on done.
     Returns the full response string.
+
+    `b64` accepts a single base64 image or a list of them (BEV first, then the
+    forward camera).  `stats`, if given, is filled from the final chunk with the
+    prefill/decode split — without it the per-frame latency is one opaque number
+    and you cannot tell whether adding the second image cost anything, since
+    image tokens land entirely in prefill.
     """
+    images = [b64] if isinstance(b64, str) else list(b64)
     payload = json.dumps({
         "model":  model,
-        "prompt": _SYSTEM_PROMPT,
-        "images": [b64],
+        # System text first, image payload after: Ollama caches the prompt prefix,
+        # and the instructions are identical every frame while the images are not.
+        "prompt": prompt if prompt is not None else _SYSTEM_PROMPT,
+        "images": images,
         "stream": True,
-        "options": {"temperature": 0.1, "num_predict": 140},
+        # temperature defaults to 0.1 for live/demo use, where a little variation
+        # reads more naturally. ABLATIONS MUST PASS 0: at 0.1 the same prompt and
+        # images return different decisions run to run, which silently turned an
+        # A/B into a coin flip (an arm compared against ITSELF agreed 0/6 across
+        # two runs). Measured: temperature 0 gives 3/3 identical responses.
+        "options": ({"temperature": temperature, "num_predict": 140}
+                    | ({"seed": seed} if seed is not None else {})),
     }).encode("utf-8")
 
     req = urllib.request.Request(
@@ -472,6 +986,14 @@ def _query_ollama_streaming(b64: str, model: str, base_url: str,
                     on_update(accumulated)
 
                 if done:
+                    if stats is not None:
+                        # Ollama reports durations in nanoseconds.
+                        stats.update(
+                            prompt_tokens=obj.get("prompt_eval_count", 0),
+                            eval_tokens=obj.get("eval_count", 0),
+                            prefill_ms=obj.get("prompt_eval_duration", 0) / 1e6,
+                            decode_ms=obj.get("eval_duration", 0) / 1e6,
+                        )
                     break
 
     except urllib.error.HTTPError as exc:
@@ -485,18 +1007,31 @@ def _query_ollama_streaming(b64: str, model: str, base_url: str,
     return accumulated
 
 
-def _parse_response(text: str) -> tuple[str, str]:
-    reasoning, decision = "", "UNKNOWN"
+def _parse_response(text: str) -> tuple[str, str, str]:
+    """-> (reasoning, decision, light).
+
+    `light` is the traffic-light state read from the forward camera, or "none".
+    It is parsed as its own field rather than left inside the prose because it is
+    the one claim that is directly checkable against a human label, which makes it
+    the first thing in this stage that can actually be scored.
+    """
+    reasoning, decision, light = "", "UNKNOWN", "none"
     for line in text.strip().splitlines():
         s = line.strip()
         if s.startswith("REASONING:"):
             reasoning = s[len("REASONING:"):].strip()
+        elif s.startswith("LIGHT:"):
+            tok = s[len("LIGHT:"):].strip().lower().rstrip(".")
+            light = next((c for c in _VALID_LIGHTS if c in tok), "none")
         elif s.startswith("DECISION:"):
             tok = s[len("DECISION:"):].strip().upper().rstrip(".")
+            # Ordered longest-first so "SLOW_DOWN" is not shadowed by a substring,
+            # and negations ("not STOP") do not silently match.
             decision = tok if tok in _VALID_DECISIONS else next(
-                (d for d in _VALID_DECISIONS if d in tok), "UNKNOWN"
+                (d for d in sorted(_VALID_DECISIONS, key=len, reverse=True)
+                 if d in tok), "UNKNOWN"
             )
-    return reasoning, decision
+    return reasoning, decision, light
 
 
 # ── Device ─────────────────────────────────────────────────────────────────────
@@ -557,6 +1092,32 @@ def main():
     ap.add_argument('--ollama-timeout', type=int, default=90)
     ap.add_argument('--update-every',   type=int, default=6,
                     help='Tokens between composite image refreshes (default 6)')
+    ap.add_argument('--front-cam', dest='front_cam', action='store_true', default=True,
+                    help='Send CAM_FRONT as a second image (default on) — the only '
+                         'source of traffic lights, brake lights and signage')
+    ap.add_argument('--no-front-cam', dest='front_cam', action='store_false')
+    ap.add_argument('--cam-width', type=int, default=640,
+                    help='Downscale CAM_FRONT to this width before encoding. '
+                         'Measured floor: 224/384/640 all cost ~2600 prompt '
+                         'tokens; only native 1600 costs more (~3399). Below '
+                         '640 buys nothing (default 640)')
+    ap.add_argument('--det-text', dest='det_text', action='store_true', default=True,
+                    help='Hand the decoder detections to the VLM as authoritative '
+                         'metric text (default on)')
+    ap.add_argument('--no-det-text', dest='det_text', action='store_false')
+    ap.add_argument('--release-frames', type=int, default=2,
+                    help='Consecutive quieter frames required before de-escalating '
+                         'a decision (0 disables hysteresis)')
+    ap.add_argument('--stop-latch', type=int, default=2,
+                    help='Minimum frames a STOP is held before it can be released')
+    ap.add_argument('--prev-context', dest='prev_context', action='store_true',
+                    default=True, help='Put the previous decision in the prompt')
+    ap.add_argument('--no-prev-context', dest='prev_context', action='store_false')
+    ap.add_argument('--light-crop', dest='light_crop', action='store_true',
+                    default=True,
+                    help='Add a map-projected zoom on the traffic light to the '
+                         'stage-1 query, alongside the wide frame (default on)')
+    ap.add_argument('--no-light-crop', dest='light_crop', action='store_false')
     ap.add_argument('--log',            default=None)
     args = ap.parse_args()
 
@@ -622,6 +1183,11 @@ def main():
 
     prev_bev     = None
     frame_idx    = 0
+    # Hysteresis state. release_frames=0 disables smoothing entirely, which is the
+    # A/B baseline for measuring what the latch actually buys.
+    smoother = DecisionSmoother(release_frames=args.release_frames,
+                                stop_latch=args.stop_latch)
+    prev_decision: dict | None = None
     patch_origin = None
     ego_history: list = []   # [(tx, ty, yaw), ...] accumulated across frames
 
@@ -695,21 +1261,70 @@ def main():
             _save_bev_dual(canvas, trail_canvas, cam_grid=cam_grid)
 
             # ── VLM streaming ──────────────────────────────────────────────────
-            reasoning = decision = ""
+            reasoning = decision = raw_decision = ""
+            light = "none"
             vl_ms = 0.0
+            vl_stats: dict = {}
             if args.vl:
                 def _on_token(text, _c=canvas, _t=trail_canvas, _g=cam_grid):
                     _save_bev_dual(_c, _t, vl_text=text, cam_grid=_g)
 
+                # Geometry as text, semantics as a second image. The detector owns
+                # metric state; the camera is the only channel carrying light state.
+                det_text = detections_to_text(
+                    out['cls_logits'][0].cpu(), out['reg_preds'][0].cpu(),
+                    out['ref_pts'][0].cpu(), score_thr=args.score_thr,
+                    lidar2ego_yaw=lidar2ego_yaw) if args.det_text else None
+
+                payload_images = [_encode_image(out_path)]
+                cam_b64 = (front_camera_b64(nusc, sample_token, args.dataroot,
+                                            max_width=args.cam_width)
+                           if args.front_cam else None)
+                if cam_b64:
+                    payload_images.append(cam_b64)
+
                 t1 = time.monotonic()
+
+                # Stage 1: camera alone reads the light. Must happen in its own
+                # call — any detection text in context suppresses it entirely.
+                light_pre = "none" if cam_b64 else None
+                if cam_b64:
+                    # Map-projected zoom on the signal head. The wide frame keeps
+                    # lane context and the other semantics a BEV cannot carry
+                    # (brake lights, construction, pedestrian intent); the crop
+                    # restores the state that range destroys. Measured on
+                    # scene-0757: 4/5 -> 5/5, recovering the 32 m miss.
+                    crop_b64 = (light_crop_b64(nusc, sample_token, args.dataroot)
+                                if args.light_crop else None)
+                    try:
+                        light_pre = query_light(cam_b64, args.ollama_model,
+                                                args.ollama_url, args.ollama_timeout,
+                                                vl_stats, crop_b64=crop_b64)
+                    except Exception as exc:
+                        print(f'[WARN] light query failed ({exc}) — assuming none.')
+
+                # Stage 2: decision, with the light state supplied as text.
+                prompt = build_prompt(det_text, with_front_cam=cam_b64 is not None,
+                                      light_state=light_pre, prev=prev_decision)
                 try:
                     raw = _query_ollama_streaming(
-                        _encode_image(out_path),
+                        payload_images,
                         args.ollama_model, args.ollama_url,
                         args.ollama_timeout, _on_token,
                         update_every=args.update_every,
+                        prompt=prompt, stats=vl_stats,
                     )
-                    reasoning, decision = _parse_response(raw)
+                    reasoning, decision, light = _parse_response(raw)
+                    # Stage 1 saw the camera with nothing competing for
+                    # attention, so it outranks stage 2's echo.
+                    if light_pre is not None:
+                        light = light_pre
+                    raw_decision = decision
+                    # Hysteresis is applied AFTER logging the raw value, so the
+                    # smoother's effect stays measurable rather than hidden.
+                    decision = smoother.update(decision)
+                    prev_decision = {'decision': decision, 'light': light,
+                                     'reasoning': reasoning}
                     _save_bev_dual(canvas, trail_canvas, vl_text=raw, cam_grid=cam_grid)
                 except urllib.error.URLError as exc:
                     raw = f"[OLLAMA UNREACHABLE: {exc.reason}]"
@@ -720,21 +1335,35 @@ def main():
                 vl_ms = (time.monotonic() - t1) * 1000
 
             # ── Console ────────────────────────────────────────────────────────
+            split = ''
+            if vl_stats:
+                split = (f' (prefill {vl_stats["prefill_ms"]:.0f} ms /'
+                         f' {vl_stats["prompt_tokens"]} tok,'
+                         f' decode {vl_stats["decode_ms"]:.0f} ms)')
             print(f'  frame {frame_idx:3d} | bev {bev_ms:6.1f} ms'
-                  + (f' | vl {vl_ms:5.0f} ms' if args.vl else '')
+                  + (f' | vl {vl_ms:5.0f} ms{split}' if args.vl else '')
                   + f' | {_top3_str(out["cls_logits"][0])}'
                   + f' | {sample_token[:8]}')
             if reasoning:
                 print(f'           reasoning : {reasoning}')
             if decision:
                 label = _LABELS.get(decision, decision)
-                print(f'           decision  : {label}')
+                held = ('' if raw_decision == decision
+                        else f'   [raw {raw_decision} -> held {decision}]')
+                print(f'           decision  : {label}   light: {light}{held}')
 
             if log_fh and args.vl:
                 log_fh.write(json.dumps({
                     "frame": frame_idx, "token": sample_token,
-                    "decision": decision, "reasoning": reasoning,
+                    "decision": decision, "raw_decision": raw_decision,
+                    "reasoning": reasoning, "light": light,
                     "bev_ms": round(bev_ms, 1), "vl_ms": round(vl_ms, 1),
+                    "prefill_ms": round(vl_stats.get("prefill_ms", 0.0), 1),
+                    "decode_ms": round(vl_stats.get("decode_ms", 0.0), 1),
+                    "prompt_tokens": vl_stats.get("prompt_tokens", 0),
+                    "front_cam": bool(args.front_cam and cam_b64),
+                    "light_crop": bool(args.light_crop and cam_b64 and crop_b64),
+                    "det_text": bool(args.det_text),
                 }) + '\n')
                 log_fh.flush()
 

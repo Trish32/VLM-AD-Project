@@ -41,6 +41,19 @@ bevformer_vldrive/bev_outputs/light_annotation/
 #     numbers that matter are quoted in e2e_pipeline/README.md
 e2e_pipeline/closed_loop_results.json
 
+# --- scratch renders written by the ablation/scoring tools ---
+bevformer_vldrive/eval_results/_*.png
+bevformer_vldrive/bev_outputs/latest_bev_grid.jpg
+
+# --- RETRACTED: produced before the ablation determinism fix (temperature 0.1),
+#     where an arm compared against itself agreed 0/6 across two runs. Kept
+#     locally for reference; not published, because they read as findings.
+bevformer_vldrive/eval_results/gt_detection_ablation.json
+bevformer_vldrive/eval_results/gt_detection_ablation_nolight.json
+bevformer_vldrive/eval_results/velocity_ablation.json
+# Smoke-test output built from RANDOM labels, not real annotation.
+bevformer_vldrive/eval_results/light_scores.json
+
 # --- prompts (kept local, excluded from GitHub) ---
 bevformer_vldrive/prompts.txt
 

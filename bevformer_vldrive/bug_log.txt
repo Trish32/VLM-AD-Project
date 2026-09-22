@@ -1,0 +1,108 @@
+BEVFormer-Tiny — pure-PyTorch / MPS port — bug log
+==================================================
+Checkpoint: model/checkpoints/bevformer_tiny_fp16_epoch_24.pth (643 keys, fp16)
+Env: conda run -n simple_bev_vldrive, PYTORCH_ENABLE_MPS_FALLBACK=1
+Data: nuScenes-mini at /Users/trish/Downloads/nuScenes_miniV1.0
+
+
+STATUS (2026-09-21)
+-------------------
+Working. mini_val NDS 0.2255 / mAP 0.1634 (0.2334 over the 7 classes actually
+present); mini_train NDS 0.3148 / mAP 0.2402. BEV mIoU 0.1902. 5.3 FPS on MPS.
+Checkpoint loads with ZERO missing / ZERO unexpected model keys.
+
+
+"mAP ~= 0" INVESTIGATION (2026-09-21) — NO BUG, STALE README
+-------------------------------------------------------------
+Concern: README advertised NDS 0.0238 / mAP ~0.0000 / mIoU 0.0083 and flagged
+"592/643 keys loaded" as 51 possibly-unloaded weights, implying a randomly
+initialised head.  BOTH claims were false.
+
+1. THE README WAS STALE.  Re-running tools/eval.py unchanged gives mAP 0.1634
+   (mini_val) / 0.2402 (mini_train), not ~0.  The port had already been fixed at
+   some earlier point and the results section was never updated.  Every
+   downstream conclusion that rested on "perception is broken" was wrong.
+
+2. "592/643" IS NOT 51 MISSING WEIGHTS.  It is 592 *model* parameters, all
+   filled.  load_state_dict reports 0 missing, 0 unexpected.  Instrumenting the
+   remap's source lookups shows exactly which 51 checkpoint keys go unconsumed:
+     - 50 = pts_bbox_head.cls_branches.{0..4}.*  — per-decoder-layer auxiliary
+       classification heads.  Used only for deep supervision during training;
+       inference reads cls_branches.5, which IS loaded.
+     - 1  = pts_bbox_head.code_weights           — a loss-weighting vector.
+   Both are correctly unused at inference.  There is no bug here.
+
+3. THE REMAINING GAP IS THE SAME ZERO-GT ARTIFACT AS FLASHOCC.
+   mini_val = scene-0103 + scene-0916 only, and those two scenes contain:
+       barrier               0 GT instances
+       construction_vehicle  0 GT instances
+       trailer               0 GT instances
+   The devkit scores each of them AP = 0 anyway and averages over all 10
+   classes, deflating mAP by 30%.  Restricted to the 7 present classes:
+       mAP 0.2334  vs  official BEVFormer-tiny full-val 0.252
+   i.e. within small-sample variance on 81 frames.
+
+4. THE TP METRICS ARE HIT BY THE SAME ARTIFACT — AND THE "FINGERPRINT" LIED.
+   Absent classes are assigned the WORST-CASE TP error (1.000) on every metric.
+   Over all 10 classes that reads as scale_err 0.484 / orient_err 0.872 with
+   trans_err 0.909 — which matches the sparse4d bug_log fingerprint for a
+   "dims/yaw convention bug" (ASE+AOE bad, ATE fine).  It is not one.
+   Over the 7 present classes:
+       trans_err 0.870  (official 0.900)   <- BETTER than published
+       scale_err 0.263  (official 0.294)   <- BETTER than published
+   Directly checked the dims too: mean predicted car size (1.90, 4.53, 1.67) vs
+   GT (1.92, 4.62, 1.69), w < l for every class.  No transposition.
+   LESSON: the TP fingerprint table is only valid once vacuous classes are
+   excluded.  A split missing whole classes forges the signature of a
+   convention bug.
+
+   DO NOT RE-CHASE the mAP gap.  The only lever is more val data (full nuScenes
+   val, 150 scenes), not a code change.
+
+
+FIXED — attribute_name was a per-class constant (2026-09-21)
+-------------------------------------------------------------
+File: tools/eval.py (ATTR_DEFAULT, velocity_to_attribute, preds_to_nuscenes)
+
+What was wrong:
+  Every submission record got attribute_name = ATTR_DEFAULT[class], a hardcoded
+  constant — every car "vehicle.parked", every bus "vehicle.parked", every
+  pedestrian "pedestrian.standing".  The model regresses velocity at reg indices
+  8-9 and that signal was being thrown away.  A stationary-default bus in moving
+  traffic scores attr_err = 1.000 on every frame (it did: bus attr_err was
+  exactly 1.000).
+
+Fix:
+  Derive the attribute from the predicted global velocity, reproducing mmdet3d's
+  _format_bbox heuristic (speed > 0.2 m/s -> moving/with_rider, else standing/
+  stopped/default).  Also corrected two defaults to match
+  NuScenesDataset.DefaultAttribute: pedestrian -> 'pedestrian.moving' and
+  bus -> 'vehicle.moving' (both were inverted).
+
+Result (mAP unchanged, as attributes do not affect AP):
+      split        NDS before -> after      attr_err before -> after
+      mini_val     0.2099 -> 0.2255         0.531 -> 0.374
+      mini_train   0.2912 -> 0.3148         (-)   -> 0.324
+
+
+EVAL HARDENING (2026-09-21)
+---------------------------
+tools/eval.py now reports, per split:
+  - per-class AP alongside the GT instance count, flagging zero-GT classes
+  - "mAP over the N/10 classes present", the comparable headline
+  - the five TP errors (trans/scale/orient/vel/attr)
+and saves gt_counts, classes_present, mAP_present_classes and tp_errors into
+eval_results/summary.json.  This is what stops finding #3 from being rediscovered
+as a model defect a third time (FlashOcc hit it first — see
+Occupancy/FlashOcc/bug_log.txt).
+
+
+STILL OPEN
+----------
+- orient_err over present classes ~0.81 vs official 0.655, driven almost entirely
+  by motorcycle (1.761) and pedestrian (1.250); car (0.292) and bus (0.219) are
+  excellent.  Those two classes have 259 and 1358 GT instances across 2 scenes,
+  so this is most likely sample noise, but it has not been proven on full val.
+- vel_err ~0.90 vs official 0.657.  Velocity is emitted and rotated to global
+  correctly (R[:2,:2] @ [vx, vy]); worth re-checking on a split with more
+  moving-object diversity before treating it as a defect.

@@ -1,0 +1,83 @@
+{
+ "n": 6,
+ "arms": [
+  "pred",
+  "gt"
+ ],
+ "distributions": {
+  "pred": {
+   "PROCEED": 3,
+   "SLOW_DOWN": 3
+  },
+  "gt": {
+   "PROCEED": 5,
+   "SLOW_DOWN": 1
+  }
+ },
+ "gt_match_rate": 0.7142857142857143,
+ "noise_floor_self_agreement": 1.0,
+ "temperature": 0.0,
+ "hysteresis": false,
+ "frames": [
+  {
+   "scene": "scene-1077",
+   "frame": 0,
+   "token": "5998b71b64c146769bde1d5430741381",
+   "light": "none",
+   "det_pred": "  car           13.3 m right        | closing 1.7 m/s    | conf 0.92\n  car           15.3 m front-right  | closing 3.3 m/s    | conf 0.39\n  car           15.5 m front-left   | receding 7.4 m/s   | conf 0.95\n  car           27.2 m ahead        | closing 4.9 m/s    | conf 0.89\n  car           41.5 m front-left   | receding 10.7 m/s  | conf 0.30\n  ... and 2 more further away",
+   "pred": "PROCEED",
+   "det_gt": "  car           12.0 m right        | closing 3.3 m/s    | conf 1.00\n  car           15.9 m front-right  | closing 3.6 m/s    | conf 1.00\n  car           16.3 m front-left   | receding 7.8 m/s   | conf 1.00\n  car           30.5 m ahead        | closing 7.2 m/s    | conf 1.00\n  car           37.3 m front-left   | receding 13.1 m/s  | conf 1.00\n  ... and 3 more further away",
+   "gt": "PROCEED"
+  },
+  {
+   "scene": "scene-1077",
+   "frame": 1,
+   "token": "30aaef2c5ab44dc4afea271fe829b459",
+   "light": "none",
+   "det_pred": "  car           12.1 m right        | closing 1.7 m/s    | conf 0.78\n  car           15.6 m front-left   | receding 15.8 m/s  | conf 0.70\n  car           23.1 m ahead        | closing 13.8 m/s   | conf 0.58\n  car           24.6 m ahead        | closing 14.0 m/s   | conf 0.29\n  car           36.7 m ahead        | closing 13.5 m/s   | conf 0.32\n  ... and 4 more further away",
+   "pred": "PROCEED",
+   "det_gt": "  car           13.0 m right        | closing 1.8 m/s    | conf 1.00\n  car           17.5 m front-left   | receding 8.3 m/s   | conf 1.00\n  car           23.8 m ahead        | closing 6.7 m/s    | conf 1.00\n  car           39.0 m ahead        | closing 8.8 m/s    | conf 1.00\n  car           40.1 m ahead        | closing 14.6 m/s   | conf 1.00\n  ... and 1 more further away",
+   "gt": "PROCEED"
+  },
+  {
+   "scene": "scene-1077",
+   "frame": 2,
+   "token": "e8b1863300964b2481fee312496d06d8",
+   "light": "none",
+   "det_pred": "  car           15.8 m front-right  | closing 12.4 m/s   | conf 0.31\n  car           16.1 m front-right  | closing 11.7 m/s   | conf 0.27\n  car           17.1 m front-left   | receding 16.1 m/s  | conf 0.76\n  car           17.4 m front-right  | closing 12.2 m/s   | conf 0.34\n  car           24.0 m front-right  | closing 13.3 m/s   | conf 0.36\n  ... and 2 more further away",
+   "pred": "PROCEED",
+   "det_gt": "  car           17.5 m front-right  | closing 5.6 m/s    | conf 1.00\n  car           18.6 m ahead        | receding 9.1 m/s   | conf 1.00\n  car           30.0 m front-right  | closing 13.3 m/s   | conf 1.00\n  car           31.3 m ahead        | closing 8.5 m/s    | conf 1.00\n  car           44.7 m ahead        | receding 13.1 m/s  | conf 1.00\n  ... and 2 more further away",
+   "gt": "PROCEED"
+  },
+  {
+   "scene": "scene-1077",
+   "frame": 3,
+   "token": "f0c059b6d7b8438ea9f08de0a3c1fc1a",
+   "light": "none",
+   "det_pred": "  car           12.5 m right        | closing 5.5 m/s    | conf 0.79\n  car           17.9 m front-right  | closing 9.1 m/s    | conf 0.40\n  car           18.6 m ahead        | receding 16.7 m/s  | conf 0.64\n  car           23.5 m front-right  | closing 14.4 m/s   | conf 0.30\n  car           45.6 m ahead        | receding 16.1 m/s  | conf 0.28\n  ... and 3 more further away",
+   "pred": "SLOW_DOWN",
+   "det_gt": "  car           13.0 m right        | closing 1.9 m/s    | conf 1.00\n  car           19.9 m ahead        | receding 9.7 m/s   | conf 1.00\n  car           21.2 m front-right  | closing 8.4 m/s    | conf 1.00\n  car           23.7 m front-right  | closing 8.0 m/s    | conf 1.00\n  car           47.3 m ahead        | receding 12.8 m/s  | conf 1.00\n  ... and 3 more further away",
+   "gt": "PROCEED"
+  },
+  {
+   "scene": "scene-1077",
+   "frame": 4,
+   "token": "a63038dfb41843eb8a14485d90c2fa35",
+   "light": "none",
+   "det_pred": "  car           14.4 m right        | receding 1.6 m/s   | conf 0.33\n  car           16.3 m front-right  | closing 10.9 m/s   | conf 0.72\n  car           16.5 m right        | receding 1.3 m/s   | conf 0.31\n  car           17.4 m ahead        | receding 16.2 m/s  | conf 0.34\n  car           18.0 m ahead        | receding 16.0 m/s  | conf 0.59\n  ... and 6 more further away",
+   "pred": "SLOW_DOWN",
+   "det_gt": "  car           16.7 m front-right  | closing 6.0 m/s    | conf 1.00\n  car           18.2 m right        | receding 1.8 m/s   | conf 1.00\n  car           20.9 m ahead        | receding 10.1 m/s  | conf 1.00\n  car           38.0 m front-right  | closing 14.9 m/s   | conf 1.00\n  car           39.9 m ahead        | closing 7.5 m/s    | conf 1.00\n  ... and 2 more further away",
+   "gt": "PROCEED"
+  },
+  {
+   "scene": "scene-1077",
+   "frame": 5,
+   "token": "7220a2aaebf347cda4efedc88dcae96e",
+   "light": "none",
+   "det_pred": "  car           12.4 m right        | closing 2.5 m/s    | conf 0.79\n  car           19.1 m ahead        | receding 16.2 m/s  | conf 0.61\n  car           21.0 m front-right  | closing 10.4 m/s   | conf 0.40\n  car           23.3 m front-right  | closing 10.4 m/s   | conf 0.42\n  car           29.6 m front-right  | closing 13.0 m/s   | conf 0.51\n  ... and 3 more further away",
+   "pred": "SLOW_DOWN",
+   "det_gt": "  car           12.5 m right        | closing 1.8 m/s    | conf 1.00\n  car           21.7 m ahead        | receding 10.4 m/s  | conf 1.00\n  car           27.0 m front-right  | closing 13.3 m/s   | conf 1.00\n  car           32.0 m front-right  | closing 7.4 m/s    | conf 1.00\n  car           45.5 m front-right  | closing 5.0 m/s    | conf 1.00\n  ... and 3 more further away",
+   "gt": "SLOW_DOWN"
+  }
+ ]
+}

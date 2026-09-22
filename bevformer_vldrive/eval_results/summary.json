@@ -16,9 +16,9 @@
     "traffic_cone": 0.21152240467575842,
     "mIoU": 0.1901559171308172
   },
-  "avg_latency_ms": 188.02678211313201,
+  "avg_latency_ms": 189.92513884204706,
   "mini_val": {
-    "NDS": 0.20988935093312538,
+    "NDS": 0.22554124448910678,
     "mAP": 0.16335196942167154,
     "per_class_AP": {
       "car": 0.34953671458260605,
@@ -31,10 +31,28 @@
       "bicycle": 0.13481929039197493,
       "traffic_cone": 0.24561304098057196,
       "barrier": 0.0
+    },
+    "gt_counts": {
+      "pedestrian": 1358,
+      "car": 2568,
+      "truck": 124,
+      "traffic_cone": 39,
+      "motorcycle": 259,
+      "bicycle": 52,
+      "bus": 41
+    },
+    "classes_present": 7,
+    "mAP_present_classes": 0.23335995631667364,
+    "tp_errors": {
+      "trans_err": 0.908977718765915,
+      "scale_err": 0.48411336334704236,
+      "orient_err": 0.8721666421908286,
+      "vel_err": 0.92210446163697,
+      "attr_err": 0.3739852162765335
     }
   },
   "mini_train": {
-    "NDS": 0.29115838601925753,
+    "NDS": 0.31483278907381396,
     "mAP": 0.2401549211976502,
     "per_class_AP": {
       "car": 0.3657518238297147,
@@ -47,6 +65,27 @@
       "bicycle": 0.16970154115020958,
       "traffic_cone": 0.3655162080621924,
       "barrier": 0.3108747014422284
+    },
+    "gt_counts": {
+      "pedestrian": 3657,
+      "car": 5051,
+      "traffic_cone": 1339,
+      "bicycle": 191,
+      "barrier": 2323,
+      "truck": 525,
+      "bus": 369,
+      "construction_vehicle": 196,
+      "motorcycle": 212,
+      "trailer": 60
+    },
+    "classes_present": 10,
+    "mAP_present_classes": 0.2401549211976502,
+    "tp_errors": {
+      "trans_err": 0.9033772315232058,
+      "scale_err": 0.2781842328474383,
+      "orient_err": 0.5467295797585836,
+      "vel_err": 1.8152553590342235,
+      "attr_err": 0.32415567112088367
     }
   }
 }

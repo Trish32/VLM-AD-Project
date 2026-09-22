@@ -50,7 +50,8 @@ from vis_infer import (
     BEVFormerTiny, NuScenesMiniLoader, build_scene_canvas, make_trajectory_canvas,
     _make_cam_grid, _get_ego_pose, _load_nusc_map, _build_remap, _get_device,
     _encode_image, _query_ollama_streaming, _parse_response, _wrap,
-    _FONT_BODY, _BG_RGB, _WHITE, _GRAY, _DECISION_COLORS, _LABELS,
+    detections_to_text, front_camera_b64, build_prompt,
+    _FONT_BODY, _BG_RGB, _WHITE, _GRAY, _DECISION_COLORS, _LABELS, _LIGHT_COLORS,
 )
 
 OUT_DIR  = ROOT / 'bev_outputs'
@@ -60,7 +61,7 @@ DEC_DIR  = TOOLS_DIR / 'reasoning_decisions'   # per-scene VLM decision logs
 
 
 # ── Overlay: VLM block anchored to the TOP of a panel ───────────────────────────
-def _overlay_vl_text_top(cell, reasoning, decision):
+def _overlay_vl_text_top(cell, reasoning, decision, light='none'):
     """Draw the VLM reasoning/decision block on the TOP of *cell* (RGB uint8)."""
     H, W   = cell.shape[:2]
     h_box  = min(160, H // 2)
@@ -78,6 +79,11 @@ def _overlay_vl_text_top(cell, reasoning, decision):
 
     draw.line([(0, h_box), (W, h_box)], fill=(60, 100, 100), width=1)
     draw.text((pad, 4), "REASONING", font=_FONT_BODY, fill=_WHITE)
+    # Light state comes only from the forward camera — see vis_infer.build_prompt.
+    if light in _LIGHT_COLORS:
+        chip = f"LIGHT {light.upper()}"
+        cw = int(draw.textlength(chip, font=_FONT_BODY))
+        draw.text((W - pad - cw, 4), chip, font=_FONT_BODY, fill=_LIGHT_COLORS[light])
     y = 22
     for ln in _wrap(reasoning or '', wrap_cols)[:3]:
         draw.text((pad, y), ln, font=_FONT_BODY, fill=_GRAY)
@@ -95,14 +101,14 @@ def _overlay_vl_text_top(cell, reasoning, decision):
     return np.array(img, dtype=np.uint8)
 
 
-def _overlay_back_top(cam_grid, reasoning, decision):
+def _overlay_back_top(cam_grid, reasoning, decision, light='none'):
     """Overlay the VLM block on the TOP of the BACK cell (row 1, centre col)."""
     out    = cam_grid.copy()
     cell_w = out.shape[1] // 3
     cell_h = out.shape[0] // 2
     back   = out[cell_h:2 * cell_h, cell_w:2 * cell_w]
     out[cell_h:2 * cell_h, cell_w:2 * cell_w] = _overlay_vl_text_top(
-        back, reasoning, decision)
+        back, reasoning, decision, light)
     return out
 
 
@@ -214,15 +220,33 @@ def _render_scene(model, nusc, loader, scene_idx, args, device, log_path=None):
 
             # ── Reasoning / decision ────────────────────────────────────────────
             vl_ms = 0.0
+            light = 'none'
+            vl_stats: dict = {}
             if querying:
                 vis_path = str(OUT_DIR / '_vlm_query.png')
                 cv2.imwrite(vis_path, cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR))
+
+                # Geometry as authoritative text, semantics as the forward camera.
+                det_text = detections_to_text(
+                    out['cls_logits'][0].cpu(), out['reg_preds'][0].cpu(),
+                    out['ref_pts'][0].cpu(), score_thr=args.score_thr,
+                    lidar2ego_yaw=lidar2ego_yaw) if args.det_text else None
+                payload_images = [_encode_image(vis_path)]
+                cam_b64 = (front_camera_b64(nusc, sample_token, args.dataroot,
+                                            max_width=args.cam_width)
+                           if args.front_cam else None)
+                if cam_b64:
+                    payload_images.append(cam_b64)
+
                 t1 = time.perf_counter()
                 try:
                     rawtxt = _query_ollama_streaming(
-                        _encode_image(vis_path), args.ollama_model, args.ollama_url,
-                        args.ollama_timeout, on_update=lambda _t: None)
-                    reasoning, decision = _parse_response(rawtxt)
+                        payload_images, args.ollama_model, args.ollama_url,
+                        args.ollama_timeout, on_update=lambda _t: None,
+                        prompt=build_prompt(det_text,
+                                            with_front_cam=cam_b64 is not None),
+                        stats=vl_stats)
+                    reasoning, decision, light = _parse_response(rawtxt)
                 except Exception as exc:
                     reasoning, decision = f'[VLM error: {exc}]', 'UNKNOWN'
                 vl_ms = (time.perf_counter() - t1) * 1000
@@ -230,12 +254,16 @@ def _render_scene(model, nusc, loader, scene_idx, args, device, log_path=None):
                 rec = by_frame.get(frame_idx, {})
                 reasoning = rec.get('reasoning', '').strip()
                 decision  = rec.get('decision', 'UNKNOWN')
+                light     = rec.get('light', 'none')
 
             if log_fh:
                 log_fh.write(json.dumps({
                     'frame': frame_idx, 'token': sample_token,
-                    'decision': decision, 'reasoning': reasoning,
-                    'bev_ms': round(bev_ms, 1), 'vl_ms': round(vl_ms, 1)}) + '\n')
+                    'decision': decision, 'reasoning': reasoning, 'light': light,
+                    'bev_ms': round(bev_ms, 1), 'vl_ms': round(vl_ms, 1),
+                    'prefill_ms': round(vl_stats.get('prefill_ms', 0.0), 1),
+                    'decode_ms': round(vl_stats.get('decode_ms', 0.0), 1),
+                    'prompt_tokens': vl_stats.get('prompt_tokens', 0)}) + '\n')
                 log_fh.flush()
 
             # ── Assemble (mirror _save_bev_dual, BACK-top overlay) ──────────────
@@ -244,7 +272,7 @@ def _render_scene(model, nusc, loader, scene_idx, args, device, log_path=None):
             sep = np.full((canvas.shape[0], 2, 3), 255, dtype=np.uint8)
             top = np.concatenate([pred_panel, sep, traj_panel], axis=1)
 
-            grid_out = _overlay_back_top(cam_grid, reasoning, decision)
+            grid_out = _overlay_back_top(cam_grid, reasoning, decision, light)
             if grid_out.shape[1] != top.shape[1]:
                 new_h = int(round(grid_out.shape[0] * top.shape[1] / grid_out.shape[1]))
                 grid_out = cv2.resize(grid_out, (top.shape[1], new_h),
@@ -289,6 +317,15 @@ def main():
     ap.add_argument('--ollama-url',     default='http://localhost:11434')
     ap.add_argument('--ollama-model',   default='qwen2.5vl:7b')
     ap.add_argument('--ollama-timeout', type=int, default=120)
+    ap.add_argument('--front-cam', dest='front_cam', action='store_true', default=True,
+                    help='Send CAM_FRONT as a second image (default on)')
+    ap.add_argument('--no-front-cam', dest='front_cam', action='store_false')
+    ap.add_argument('--cam-width', type=int, default=640,
+                    help='Downscale CAM_FRONT to this width. Values below 640 '
+                         'do not reduce tokens further (processor rescales)')
+    ap.add_argument('--det-text', dest='det_text', action='store_true', default=True,
+                    help='Hand detections to the VLM as authoritative metric text')
+    ap.add_argument('--no-det-text', dest='det_text', action='store_false')
     ap.add_argument('--decisions',  default=None,
                     help='With --no-vl: decisions.jsonl to read reasoning from')
     args = ap.parse_args()
