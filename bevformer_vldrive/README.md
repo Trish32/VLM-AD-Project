@@ -19,12 +19,14 @@ one-sentence reasoning.
 See [Experiment: closing the modality gap](#experiment-closing-the-modality-gap)
 for the measured cost of each channel and the trade-offs between them.
 
-![BEVFormer-VLDrive demo](bev_outputs/scene_gifs/scene07_scene-1077_bev.gif)
+![BEVFormer-VLDrive demo](bev_outputs/scene_gifs/scene04_scene-0757_bev.gif)
 
-*Per-frame composite: predicted BEV (left) with short class tags (`veh`, `ped`,
-`bar`, `cone`) | ground-truth ego trajectory (right), the 6-camera surround view
-below with projected 3-D boxes, and the VLM reasoning / decision overlaid on the
-BACK camera.*
+*scene-0757 — a red light with a completely clear road, which a BEV-only planner
+cannot get right even in principle. Predicted BEV (left) with short class tags
+(`veh`, `ped`, `bar`, `cone`) | ground-truth ego trajectory (right); the
+6-camera surround view below with projected 3-D boxes; VLM reasoning, the
+`LIGHT` chip read from the forward camera, and the resulting decision overlaid
+on the BACK camera.*
 
 ---
 

@@ -51,6 +51,7 @@ from vis_infer import (
     _make_cam_grid, _get_ego_pose, _load_nusc_map, _build_remap, _get_device,
     _encode_image, _query_ollama_streaming, _parse_response, _wrap,
     detections_to_text, front_camera_b64, build_prompt,
+    query_light, light_crop_b64, DecisionSmoother,
     _FONT_BODY, _BG_RGB, _WHITE, _GRAY, _DECISION_COLORS, _LABELS, _LIGHT_COLORS,
 )
 
@@ -181,6 +182,9 @@ def _render_scene(model, nusc, loader, scene_idx, args, device, log_path=None):
 
     log_fh = open(log_path, 'w') if (querying and log_path) else None
     prev_bev, frame_idx, patch_origin = None, 0, None
+    # Per-scene temporal state: latching a stop across a scene cut is meaningless.
+    smoother = DecisionSmoother()
+    prev_decision: dict | None = None
     ego_history, comp_frames, cam_frames = [], [], []
 
     with torch.no_grad():
@@ -239,14 +243,35 @@ def _render_scene(model, nusc, loader, scene_idx, args, device, log_path=None):
                     payload_images.append(cam_b64)
 
                 t1 = time.perf_counter()
+                # Stage 1: the camera alone (plus a map-projected zoom on the
+                # fixture) reads the light. It must be its own call — any
+                # detection text in context suppresses the reading entirely.
+                light_pre = 'none' if cam_b64 else None
+                if cam_b64:
+                    crop_b64 = (light_crop_b64(nusc, sample_token, args.dataroot)
+                                if args.light_crop else None)
+                    try:
+                        light_pre = query_light(cam_b64, args.ollama_model,
+                                                args.ollama_url, args.ollama_timeout,
+                                                vl_stats, crop_b64=crop_b64)
+                    except Exception as exc:
+                        print(f'[WARN] light query failed ({exc})')
                 try:
+                    # Stage 2: decision, with the light state supplied as text.
                     rawtxt = _query_ollama_streaming(
                         payload_images, args.ollama_model, args.ollama_url,
                         args.ollama_timeout, on_update=lambda _t: None,
                         prompt=build_prompt(det_text,
-                                            with_front_cam=cam_b64 is not None),
+                                            with_front_cam=cam_b64 is not None,
+                                            light_state=light_pre,
+                                            prev=prev_decision),
                         stats=vl_stats)
                     reasoning, decision, light = _parse_response(rawtxt)
+                    if light_pre is not None:
+                        light = light_pre       # stage 1 outranks stage 2's echo
+                    decision = smoother.update(decision)
+                    prev_decision = {'decision': decision, 'light': light,
+                                     'reasoning': reasoning}
                 except Exception as exc:
                     reasoning, decision = f'[VLM error: {exc}]', 'UNKNOWN'
                 vl_ms = (time.perf_counter() - t1) * 1000
@@ -326,6 +351,9 @@ def main():
     ap.add_argument('--det-text', dest='det_text', action='store_true', default=True,
                     help='Hand detections to the VLM as authoritative metric text')
     ap.add_argument('--no-det-text', dest='det_text', action='store_false')
+    ap.add_argument('--light-crop', dest='light_crop', action='store_true',
+                    default=True, help='Map-projected zoom on the traffic light')
+    ap.add_argument('--no-light-crop', dest='light_crop', action='store_false')
     ap.add_argument('--decisions',  default=None,
                     help='With --no-vl: decisions.jsonl to read reasoning from')
     args = ap.parse_args()

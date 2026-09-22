@@ -57,9 +57,17 @@ bevformer_vldrive/eval_results/light_scores.json
 # --- prompts (kept local, excluded from GitHub) ---
 bevformer_vldrive/prompts.txt
 
-# --- scene GIFs: only the README demo (scene07) is tracked ---
+# --- scene GIFs: only the README demo is tracked. scene-0757 is the demo
+#     because it is the case the four-channel pipeline exists for: a red light
+#     with a completely clear road, which a BEV-only planner cannot get right.
 bevformer_vldrive/bev_outputs/scene_gifs/*
-!bevformer_vldrive/bev_outputs/scene_gifs/scene07_scene-1077_bev.gif
+!bevformer_vldrive/bev_outputs/scene_gifs/scene04_scene-0757_bev.gif
+
+# --- per-frame scratch renders: regenerable from infer.py / vis_infer.py ---
+bevformer_vldrive/bev_outputs/vis_*.png
+bevformer_vldrive/bev_outputs/bev_*.png
+bevformer_vldrive/bev_outputs/cameras/
+bevformer_vldrive/bev_outputs/_vlm_query.png
 
 # --- project memory (kept local, excluded from GitHub) ---
 bevformer_vldrive/memory/
