@@ -96,13 +96,24 @@ def _edge_color(fill: tuple) -> tuple:
 
 def _global_to_pixel(gx: float, gy: float,
                       patch_ox: float, patch_oy: float,
-                      canvas_half: int, scale: float) -> tuple[int, int]:
+                      canvas_half: int, scale: float,
+                      view_yaw: float = 0.0) -> tuple[int, int]:
     """
     Global metres → canvas (col, row).
     patch_ox, patch_oy : global coords of canvas centre.
+    view_yaw : rotate the world about the canvas centre by this angle (rad).
+        0 leaves the canvas north-up. For a heading-up view pass
+        pi/2 - ego_yaw, which carries the ego's forward direction onto +y and
+        therefore onto row 0. Every layer projects through this one function, so
+        rotating here rotates detections, GT boxes, trail and ego together; the
+        map raster is handled separately via get_map_mask's patch_angle.
     """
-    col = int(round(canvas_half + (gx - patch_ox) * scale))
-    row = int(round(canvas_half - (gy - patch_oy) * scale))
+    dx, dy = gx - patch_ox, gy - patch_oy
+    if view_yaw:
+        c, s_ = math.cos(view_yaw), math.sin(view_yaw)
+        dx, dy = dx * c - dy * s_, dx * s_ + dy * c
+    col = int(round(canvas_half + dx * scale))
+    row = int(round(canvas_half - dy * scale))
     return col, row
 
 
@@ -148,6 +159,7 @@ def _draw_drivable_area(
     patch_oy:    float,
     patch_range: float,
     canvas_size: int,
+    view_yaw:     float = 0.0,
 ) -> None:
     """
     Render drivable area onto *canvas* (in-place) using a north-up patch
@@ -164,7 +176,13 @@ def _draw_drivable_area(
     try:
         mask = nusc_map.get_map_mask(
             (patch_ox, patch_oy, patch_range, patch_range),
-            0.0,
+            # NEGATIVE of view_yaw: get_map_mask rotates the PATCH, which is the
+            # inverse of rotating the world. Verified by rendering scene-0757 at
+            # 0 / +view_yaw / -view_yaw -- only -view_yaw puts the ego's road
+            # vertical under a forward-up arrow. Getting this backwards leaves
+            # correctly-rotated boxes sitting on a wrongly-rotated road, which
+            # reads as "boxes are inclined and objects move backwards".
+            -math.degrees(view_yaw),
             ['drivable_area'],
             canvas_size=(canvas_size, canvas_size),
         )                                          # (1, H, W) uint8
@@ -192,6 +210,7 @@ def _draw_detections(
     score_thr:     float,
     box_alpha:     float,
     lidar2ego_yaw: float = 0.0,   # yaw of lidar2ego calibration (radians)
+    view_yaw:      float = 0.0,   # canvas rotation; pi/2 - ego_yaw = heading-up
 ) -> np.ndarray:
     """
     Transform each detection from LiDAR frame → global frame, then draw.
@@ -241,7 +260,7 @@ def _draw_detections(
         global_yaw = yaw_total - yaw_lid - math.pi / 2
 
         col_c, row_c = _global_to_pixel(gx, gy, patch_ox, patch_oy,
-                                         canvas_half, scale)
+                                         canvas_half, scale, view_yaw)
 
         if not (-margin <= col_c < canvas_size + margin and
                 -margin <= row_c < canvas_size + margin):
@@ -250,7 +269,8 @@ def _draw_detections(
         l_px = max(l_m * scale, 4.0)
         w_px = max(w_m * scale, 3.0)
 
-        corners = _box_corners_global(col_c, row_c, l_px, w_px, global_yaw)
+        corners = _box_corners_global(col_c, row_c, l_px, w_px,
+                                      global_yaw + view_yaw)
         cv2.fillPoly(det_layer, [corners], color=fill)
         cv2.polylines(det_layer, [corners], isClosed=True,
                       color=_edge_color(fill), thickness=1)
@@ -282,6 +302,7 @@ def _draw_gt_boxes(
     patch_oy:    float,
     canvas_size: int,
     scale:       float,
+    view_yaw:      float = 0.0,
 ) -> None:
     """
     Draw ground-truth 3-D annotation boxes (outline-only) onto *canvas* in-place.
@@ -311,7 +332,7 @@ def _draw_gt_boxes(
             continue
 
         col_c, row_c = _global_to_pixel(tx, ty, patch_ox, patch_oy,
-                                         canvas_half, scale)
+                                         canvas_half, scale, view_yaw)
         if not (-margin <= col_c < canvas_size + margin and
                 -margin <= row_c < canvas_size + margin):
             continue
@@ -319,7 +340,8 @@ def _draw_gt_boxes(
         color  = GROUP_COLORS[group]
         l_px   = max(l_m * scale, 4.0)
         w_px   = max(w_m * scale, 3.0)
-        corners = _box_corners_global(col_c, row_c, l_px, w_px, yaw)
+        corners = _box_corners_global(col_c, row_c, l_px, w_px,
+                                      yaw + view_yaw)
         cv2.polylines(canvas, [corners], isClosed=True,
                       color=color, thickness=1, lineType=cv2.LINE_AA)
 
@@ -332,18 +354,23 @@ def _draw_ego(
     row_ego:     int,
     global_yaw:  float,
     scale:       float,
+    view_yaw:      float = 0.0,
 ) -> None:
     """
     Draw ego circle at (col_ego, row_ego) with arrow pointing along global_yaw.
-    global_yaw=0 → east → arrow points right on a north-up canvas.
+    global_yaw=0 → east → arrow points right on a north-up canvas. With
+    view_yaw set the arrow rotates with the world, so a heading-up canvas draws
+    it pointing straight up.
     global_yaw=π/2 → north → arrow points up.
     """
     radius    = max(5, int(1.6 * scale))
     arrow_len = int(4.0 * scale)
 
-    # Arrow tip in north-up canvas: +x = east = +col, +y = north = -row
-    tip_col = int(col_ego + math.cos(global_yaw) * arrow_len)
-    tip_row = int(row_ego - math.sin(global_yaw) * arrow_len)
+    # Arrow tip in canvas space: +x = +col, +y = -row. Adding view_yaw keeps the
+    # arrow attached to the world, so a heading-up canvas draws it straight up.
+    a = global_yaw + view_yaw
+    tip_col = int(col_ego + math.cos(a) * arrow_len)
+    tip_row = int(row_ego - math.sin(a) * arrow_len)
 
     cv2.circle(canvas, (col_ego, row_ego), radius + 2, _EGO_OUTLINE,
                thickness=2, lineType=cv2.LINE_AA)
@@ -366,6 +393,7 @@ def build_scene_canvas(
     score_thr:      float = 0.25,
     box_alpha:      float = 0.60,
     lidar2ego_yaw:  float = 0.0,
+    heading_up:     bool  = False,
 ) -> np.ndarray:
     """
     Composite a north-up BEV canvas from BEVFormer predictions.
@@ -397,18 +425,26 @@ def build_scene_canvas(
     """
     scale       = canvas_size / patch_range
     canvas_half = canvas_size // 2
-    patch_ox, patch_oy = patch_origin
-
     ego_tx  = float(ego_pose['translation'][0])
     ego_ty  = float(ego_pose['translation'][1])
     ego_yaw = Quaternion(ego_pose['rotation']).yaw_pitch_roll[0]  # radians
+
+    # Heading-up re-centres on the ego and rotates the world so forward is row 0,
+    # matching the DiffusionDrive planning panel. pi/2 - ego_yaw carries the ego's
+    # heading onto +y, which _global_to_pixel maps to up.
+    if heading_up:
+        patch_ox, patch_oy = ego_tx, ego_ty
+        view_yaw = math.pi / 2 - ego_yaw
+    else:
+        patch_ox, patch_oy = patch_origin
+        view_yaw = 0.0
 
     # ── Layer 1: background ────────────────────────────────────────────────────
     canvas = np.full((canvas_size, canvas_size, 3), _BG_COLOR, dtype=np.uint8)
 
     # ── Layer 2: drivable area ─────────────────────────────────────────────────
     _draw_drivable_area(canvas, nusc_map, patch_ox, patch_oy,
-                        patch_range, canvas_size)
+                        patch_range, canvas_size, view_yaw)
 
     # ── Layer 3: detections ────────────────────────────────────────────────────
     canvas = _draw_detections(
@@ -421,13 +457,14 @@ def build_scene_canvas(
         canvas_size, scale,
         score_thr, box_alpha,
         lidar2ego_yaw=lidar2ego_yaw,
+        view_yaw=view_yaw,
     )
 
     # ── Layer 4: ego vehicle ───────────────────────────────────────────────────
     col_ego, row_ego = _global_to_pixel(ego_tx, ego_ty,
                                          patch_ox, patch_oy,
                                          canvas_half, scale)
-    _draw_ego(canvas, col_ego, row_ego, ego_yaw, scale)
+    _draw_ego(canvas, col_ego, row_ego, ego_yaw, scale, view_yaw)
 
     return canvas
 
@@ -443,6 +480,8 @@ def make_trajectory_canvas(
     max_trail:    int   = 40,
     nusc          = None,
     sample_token: str   = '',
+    heading_up:   bool  = False,
+    ego_yaw:      float = 0.0,
 ) -> np.ndarray:
     """
     GT-style trajectory accumulation canvas with ground-truth annotation boxes.
@@ -462,15 +501,23 @@ def make_trajectory_canvas(
     """
     scale       = canvas_size / patch_range
     canvas_half = canvas_size // 2
-    patch_ox, patch_oy = patch_origin
+    # Heading-up re-centres on the ego's CURRENT pose (the last trail entry) so
+    # this panel shares a frame with the pred BEV and the planning view.
+    if heading_up and ego_history:
+        patch_ox, patch_oy = float(ego_history[-1][0]), float(ego_history[-1][1])
+        view_yaw = math.pi / 2 - ego_yaw
+    else:
+        patch_ox, patch_oy = patch_origin
+        view_yaw = 0.0
 
     canvas = np.full((canvas_size, canvas_size, 3), _BG_COLOR, dtype=np.uint8)
-    _draw_drivable_area(canvas, nusc_map, patch_ox, patch_oy, patch_range, canvas_size)
+    _draw_drivable_area(canvas, nusc_map, patch_ox, patch_oy, patch_range,
+                        canvas_size, view_yaw)
 
     # GT annotation boxes (outline-only) for the current frame
     if nusc is not None and sample_token:
         _draw_gt_boxes(canvas, nusc, sample_token,
-                       patch_ox, patch_oy, canvas_size, scale)
+                       patch_ox, patch_oy, canvas_size, scale, view_yaw)
 
     if not ego_history:
         return canvas
@@ -480,7 +527,8 @@ def make_trajectory_canvas(
 
     # Past positions (all but the last): fading blue circles
     for i, (tx, ty, _) in enumerate(trail[:-1]):
-        col, row = _global_to_pixel(tx, ty, patch_ox, patch_oy, canvas_half, scale)
+        col, row = _global_to_pixel(tx, ty, patch_ox, patch_oy, canvas_half, scale,
+                                view_yaw)
         if not (0 <= col < canvas_size and 0 <= row < canvas_size):
             continue
         alpha  = (i + 1) / n           # 0 = oldest, 1 = just-before-current
@@ -492,7 +540,8 @@ def make_trajectory_canvas(
 
     # Current position: full bright ego circle + heading arrow
     tx, ty, yaw = trail[-1]
-    col, row = _global_to_pixel(tx, ty, patch_ox, patch_oy, canvas_half, scale)
-    _draw_ego(canvas, col, row, yaw, scale)
+    col, row = _global_to_pixel(tx, ty, patch_ox, patch_oy, canvas_half, scale,
+                                view_yaw)
+    _draw_ego(canvas, col, row, yaw, scale, view_yaw)
 
     return canvas

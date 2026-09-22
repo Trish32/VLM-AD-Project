@@ -253,14 +253,17 @@ def build_prompt(det_text: str | None = None, with_front_cam: bool = False,
     if with_front_cam:
         parts.append(
             "You are a driving assistant. You are given TWO images.\n\n"
-            "IMAGE 1 — top-down Bird's Eye View (BEV) map, global-frame, north-up.\n"
+            "IMAGE 1 — top-down Bird's Eye View (BEV) map, EGO-CENTRIC: your\n"
+            "vehicle is at the centre and your heading is straight UP. Objects\n"
+            "above the centre are ahead of you; below are behind.\n"
             f"{_BEV_LEGEND}\n"
             "IMAGE 2 — the forward-facing camera (CAM_FRONT).\n"
         )
     else:
         parts.append(
             "Analyze this top-down Bird's Eye View (BEV) map of a driving scene.\n"
-            "Canvas is global-frame, north-up.  Colour legend:\n"
+            "EGO-CENTRIC: your vehicle is at the centre, heading straight UP.\n"
+            "Colour legend:\n"
             f"{_BEV_LEGEND}"
         )
 
@@ -840,9 +843,10 @@ def detections_to_text(cls_logits: torch.Tensor,
     Mirrors `visualizer._draw_detections` exactly — same top-200-then-threshold
     selection, same log-encoded size decode, same reference-point denormalisation —
     so the text and the rendered canvas can never disagree.  The one deliberate
-    difference is the frame: the canvas draws in global/north-up because it overlays
-    the map, while the VLM needs ego-relative ("12 m ahead") to reason about *my*
-    path.  Rotating by lidar2ego_yaw is what converts between them.
+    difference is the frame: this returns ego-relative metres ("12 m ahead"),
+    matching the ego-centric forward-up canvas the VLM is shown, so the text and
+    the picture agree about which way is forward.  Rotating by lidar2ego_yaw is
+    what converts from the LiDAR frame.
 
     Sorted by range so truncation at `max_rows` drops the least relevant objects.
     """
@@ -1233,6 +1237,7 @@ def main():
                 canvas_size=args.canvas,
                 score_thr=args.score_thr,
                 lidar2ego_yaw=lidar2ego_yaw,
+                heading_up=True,
             )
             out_path = str(OUT_DIR / f'vis_{frame_idx:03d}.png')
             cv2.imwrite(out_path, cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR))
@@ -1242,6 +1247,7 @@ def main():
                 ego_history, nusc_map, patch_origin,
                 patch_range=args.range, canvas_size=args.canvas,
                 nusc=nusc, sample_token=sample_token,
+                heading_up=True, ego_yaw=ego_yaw,
             )
 
             # ── 6-camera grid with predicted 3-D boxes ─────────────────────────
