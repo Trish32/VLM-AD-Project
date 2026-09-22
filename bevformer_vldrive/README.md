@@ -13,12 +13,13 @@ and emits a traffic-light reading, a driving decision (`PROCEED` / `SLOW_DOWN` /
 **Why those four, what each costs, and the ablations behind the design:
 [RESULT.md](RESULT.md).**
 
-![BEVFormer-VLDrive demo](bev_outputs/scene_gifs/scene00_scene-0061_bev.gif)
+![BEVFormer-VLDrive demo](bev_outputs/scene_gifs/scene08_scene-1094_bev.gif)
 
-*scene-0061 — moving at ~5 m/s through a construction intersection, 154
-detections in frame, green light ahead. The densest scene in nuScenes-mini
-(120 annotations/frame) and one where the ego is actually driving rather than
-waiting at a stop line.*
+*scene-1094 — night, after rain, ego moving at ~6.5 m/s through pedestrian
+traffic. The traffic light changes repeatedly and the decision follows it:
+`PROCEED` on green, `STOP` when it turns red at frames 6-8 and again at 12,
+`PROCEED` once it clears. Chosen because the decision actually changes — a scene
+where the ego waits at one red light shows a parked car deciding to stay parked.*
 
 *Top: 6-camera surround view with projected 3-D boxes; VLM reasoning, `LIGHT`
 chip and decision overlaid on the BACK cell. Bottom, sharing one ego-centric

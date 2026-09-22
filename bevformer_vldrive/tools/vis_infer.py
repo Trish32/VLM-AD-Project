@@ -658,7 +658,13 @@ def _draw_pred_on_cam(img_bgr: np.ndarray, lidar2img: np.ndarray,
         w   = float(np.clip(np.exp(r[2]), 0.2, 20.0))
         l   = float(np.clip(np.exp(r[3]), 0.4, 20.0))
         h   = float(np.clip(np.exp(r[5]), 0.2, 10.0))
-        yaw = math.atan2(float(r[6]), float(r[7]))
+        # BEVFormer regresses SECOND-format yaw: second = -nusc_lidar_yaw - pi/2.
+        # Using atan2(sin, cos) raw leaves every box rotated by that transform --
+        # roughly 90 degrees -- so length renders as width and vice versa. The BEV
+        # path (visualizer._draw_detections) and eval.py both invert it; this one
+        # did not, which is why the camera boxes were the wrong shape while the
+        # BEV boxes and the reported mASE were fine.
+        yaw = -math.atan2(float(r[6]), float(r[7])) - math.pi / 2
 
         corners  = _box_corners_3d(cx, cy, cz, l, w, h, yaw)         # (8, 3)
         corners_h = np.concatenate([corners,

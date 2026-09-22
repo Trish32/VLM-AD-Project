@@ -69,7 +69,7 @@ bevformer_vldrive/prompts.txt
 #     because it is the case the four-channel pipeline exists for: a red light
 #     with a completely clear road, which a BEV-only planner cannot get right.
 bevformer_vldrive/bev_outputs/scene_gifs/*
-!bevformer_vldrive/bev_outputs/scene_gifs/scene00_scene-0061_bev.gif
+!bevformer_vldrive/bev_outputs/scene_gifs/scene08_scene-1094_bev.gif
 
 # --- per-frame scratch renders: regenerable from infer.py / vis_infer.py ---
 bevformer_vldrive/bev_outputs/vis_*.png
