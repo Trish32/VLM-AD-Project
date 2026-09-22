@@ -59,7 +59,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .scene import Agent, EgoState, TrajectoryDistribution
+from .scene import (Agent, EgoState, TrajectoryDistribution,
+                    yaw_from_waypoints)
 
 try:
     from scipy.stats import ncx2 as _ncx2
@@ -310,6 +311,30 @@ class RiskModel:
         self.tracker = tracker
         self.inflate_m = float(inflate_m)
 
+    @staticmethod
+    def _support_radius(half_len: np.ndarray, half_wid: np.ndarray,
+                        heading: np.ndarray, bearing: np.ndarray) -> np.ndarray:
+        """Half-extent of a rectangle along `bearing` — its support function.
+
+        Replaces the circumscribed disc, which is badly wrong for the case that
+        dominates real scenes. A 4.6 x 1.8 m car has a circumscribed radius of
+        2.47 m, so two of them "collide" at 4.94 m of centre separation. Along
+        their long axes that is nearly right (true 4.60 m); BROADSIDE it is
+        wrong by 3.14 m, because the true distance is 1.80 m.
+
+        Cars parked along a road are broadside to the ego's path, so every one
+        of them carried a ~3 m phantom margin. With 30-50 of them each
+        contributing a few percent, `1 - prod(1 - p)` saturated near 1 before
+        geometry got a say, and the safety filter emergency-braked on scenes
+        with 3+ m of real clearance.
+
+        a|cos t| + b|sin t| is exact for a rectangle, and using it along the
+        centre-line makes this the separating-axis test on that one axis — still
+        conservative (another axis may separate the boxes) but far tighter.
+        """
+        t = bearing - heading
+        return half_len * np.abs(np.cos(t)) + half_wid * np.abs(np.sin(t))
+
     # -- core probability ---------------------------------------------------
 
     @staticmethod
@@ -361,6 +386,9 @@ class RiskModel:
         traj = np.asarray(ego_traj, dtype=np.float64)
         T = traj.shape[0]
         horizon = np.arange(1, T + 1, dtype=np.float64) * dt
+        # Ego heading per waypoint: the support radius depends on how the ego is
+        # oriented relative to each agent, not just where it is.
+        ego_headings = yaw_from_waypoints(traj)
 
         # Survival product across agents: independence *between* agents is a much
         # safer assumption than independence across time for one agent.
@@ -382,10 +410,17 @@ class RiskModel:
             if steps == 0:
                 continue
 
-            r = self.ego.footprint_radius + a.radius + self.inflate_m
-
             # (K, steps, 2) offsets from each predicted mode to the ego waypoint.
             delta = traj[None, :steps, :] - pred.loc[:, :steps, :]
+
+            # Orientation-aware collision distance along each centre-line.
+            bearing = np.arctan2(delta[..., 1], delta[..., 0])
+            ego_yaw = ego_headings[None, :steps]
+            r = (self._support_radius(0.5 * self.ego.length, 0.5 * self.ego.width,
+                                      ego_yaw, bearing)
+                 + self._support_radius(0.5 * float(a.lwh[0]), 0.5 * float(a.lwh[1]),
+                                        float(a.yaw), bearing)
+                 + self.inflate_m)
             var = pred.sigma[:, :steps, :] ** 2                          # (K, steps, 2)
 
             if self.tracker is not None and add_state_cov:

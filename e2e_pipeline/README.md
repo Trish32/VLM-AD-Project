@@ -231,7 +231,30 @@ top single agent 0.124, median 0.0000, but 31 parked cars compounding through
 velocities are exact. Same scene, same cars: **risk 0.475 → 0.039** from the prior
 alone. `WorldModel.measurement_noise()` now makes the source declare its fidelity.
 
-**The risk gate is the binding constraint, alone.** Isolated on scene-0061: with
+**Collision geometry, not the compounding formula, was inflating risk.** A
+4.6 x 1.8 m car has a circumscribed radius of 2.47 m, so two of them "collided"
+at 4.94 m of centre separation. Along their long axes that is nearly right
+(4.60 m); **broadside it is wrong by 3.14 m**, since the true distance is 1.80 m.
+Cars parked along a road are broadside to the ego path, so every one carried a
+~3 m phantom margin, and 30-50 of them compounded through `1 - prod(1 - p)` to
+saturation.
+
+Replacing the disc with the rectangle's **support function** — `a|cos t| +
+b|sin t|` along the centre-line, exact, and equivalent to the separating-axis
+test on that axis — changed scene-0061 from `risk 1.000` to `0.43`, and **37 of
+52 agents now contribute exactly zero** where previously all 52 contributed
+something. On scene-0655 (a parking lot) emergency brakes halved, 14 -> 8, and
+route completion doubled, 7.9% -> 16.4%.
+
+**The residual is real, and the threshold is not calibrated.** What is left is a
+handful of genuinely-close parked cars — the top contributor is 0.277 for a car
+the plan passes within ~2 m of. Whether that should veto a plan is a policy
+question, and `max_risk = 0.05` was picked, never measured. Lowering it further
+to make these scenes flow would be fitting the threshold to the demo. It needs
+calibrating against labelled outcomes, which is the same measurement gap noted
+above.
+
+**Before that fix, the risk gate was the binding constraint, alone.** Isolated on scene-0061: with
 the risk model attached, 0/6 candidates feasible, every rejection reading
 `risk 1.000 > 0.05`. With it disabled, **6/6 feasible and no other gate fires** --
 clearance, drivable area and dynamics all pass. So the over-conservatism is not
