@@ -5,33 +5,23 @@ backbone) for nuScenes, paired with a **Qwen2.5VL-7B** vision-language planner
 (served locally via Ollama). BEVFormer lifts the 6 surround-view cameras into a
 bird's-eye-view feature map and decodes 3-D detections.
 
-The VLM then receives four channels, split by what each component is actually
-good at: the **rendered BEV canvas** for layout, drawn ego-centric with the
-heading straight up; the **forward camera** for the
-semantics a BEV raster physically cannot carry (brake lights, signage,
-construction, pedestrian intent, and which signal governs this lane); a
-**map-projected crop** zoomed on the traffic light, because signal state is what
-range destroys first; and the **decoded detections as text** — ranges, bearings
-and closing rates treated as authoritative, so the VLM is not asked to re-estimate
-by eye the geometry the detector already measured. It emits a traffic-light
-reading, a driving decision (`PROCEED` / `SLOW_DOWN` / `YIELD` / `STOP`) and
-one-sentence reasoning.
+The VLM reads four channels — the BEV canvas, the forward camera, a
+map-projected crop of the traffic light, and the decoded detections as text —
+and emits a traffic-light reading, a driving decision (`PROCEED` / `SLOW_DOWN` /
+`YIELD` / `STOP`) and one-sentence reasoning.
 
-See **[RESULT.md](RESULT.md)** for the measured cost of each channel, the
-ablations behind the design, and every caveat on the numbers.
+**Why those four, what each costs, and the ablations behind the design:
+[RESULT.md](RESULT.md).**
 
 ![BEVFormer-VLDrive demo](bev_outputs/scene_gifs/scene04_scene-0757_bev.gif)
 
 *scene-0757 — a red light with a completely clear road, which a BEV-only planner
 cannot get right even in principle.*
 
-*Top: the 6-camera surround view with projected 3-D boxes; VLM reasoning, the
-`LIGHT` chip read from the forward camera, and the decision are overlaid on the
-BACK cell. Bottom, all three sharing one **ego-centric forward-up** frame —
-predicted BEV | ground-truth trajectory and GT boxes | the DiffusionDrive
-planning view: the 3x6 kmeans anchor vocabulary (grey), the scored modes at the
-speed the car is actually doing (teal), the top-1 plan after the safety filter
-(orange), and the logged human path (white).*
+*Top: 6-camera surround view with projected 3-D boxes; VLM reasoning, `LIGHT`
+chip and decision overlaid on the BACK cell. Bottom, sharing one ego-centric
+forward-up frame: predicted BEV | GT trajectory | DiffusionDrive planning view
+(grey anchors, teal scored modes, orange top-1 plan, white logged path).*
 
 ---
 
@@ -63,30 +53,10 @@ Useful flags:
 
 Requires Ollama running with the VLM pulled: `ollama pull qwen2.5vl:7b`.
 
-The DiffusionDrive panel needs `assets/kmeans_plan_6.npy`, a 992-byte anchor
-vocabulary vendored here so a fresh clone renders it without generating anything
-first. If it is missing the tool prints the regeneration command and falls back
-to the two-panel layout rather than failing. Those anchors are mini-derived (22
-right / 30 left turns) — fine for pipeline validation, not for a training run;
-regenerate from full nuScenes with
-`diffusiondrive_planner/tools/gen_plan_anchors.py` if you need better ones.
-
-### What the VLM receives
-
-Four channels, split by what each component is actually good at: the **BEV
-canvas** (ego-centric, heading up) for layout, the **forward camera** for the
-semantics a BEV raster cannot carry, a **map-projected crop** zoomed on the
-traffic light because signal state is what range destroys first, and the
-**decoded detections as text** — treated as authoritative so the VLM is not
-asked to re-estimate geometry the detector already measured.
-
-The light is read in its **own call** with the camera alone: a single call
-carrying detection text answers "no traffic lights visible" on frames with an
-obvious red. That state then enters the decision call as text.
-
-Full channel-by-channel costs, the ablations behind this design, the temporal
-stability work and the detection numbers are in **[RESULT.md](RESULT.md)**.
-
+The DiffusionDrive panel uses `assets/kmeans_plan_6.npy` (vendored, 992 bytes).
+If it is missing the tool prints the regeneration command and renders two panels
+instead of three. See [RESULT.md](RESULT.md#anchor-provenance) on why the
+vendored anchors are for validation only.
 
 ### 2. Per-frame BEV raster + camera mosaic
 

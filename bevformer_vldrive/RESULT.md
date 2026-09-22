@@ -15,6 +15,22 @@ See [README.md](README.md) for what the pipeline is and how to run it.
 
 ## Input design — what the VLM actually receives
 
+The VLM receives four channels, split by what each component is actually good
+at: the **rendered BEV canvas** for layout, drawn ego-centric with the heading
+straight up; the **forward camera** for the semantics a BEV raster physically
+cannot carry (brake lights, signage, construction, pedestrian intent, and which
+signal governs this lane); a **map-projected crop** zoomed on the traffic light,
+because signal state is what range destroys first; and the **decoded detections
+as text** — ranges, bearings and closing rates treated as authoritative, so the
+VLM is not asked to re-estimate by eye the geometry the detector already
+measured.
+
+The light is read in its **own call**, with the camera alone. A single call
+carrying detection text answers "no traffic lights visible" on frames with an
+obvious red; that state then enters the decision call as text. The measurement
+behind that split is in [Red-light test](#red-light-test--the-case-this-change-exists-for).
+
+
 Earlier the VLM saw only the rendered BEV canvas. That made the pipeline
 *structurally* incapable of a correct decision at a red light with clear road
 ahead — traffic lights, brake lights, turn signals, signage, construction
@@ -341,3 +357,35 @@ Results are written to `eval_results/summary.json`. Re-run with:
 ```bash
 python tools/eval.py --score-thr 0.1
 ```
+
+---
+
+## Anchor provenance
+
+The DiffusionDrive planning panel draws from `assets/kmeans_plan_6.npy`, a
+992-byte `(3, 6, 6, 2)` anchor vocabulary vendored into this project so a fresh
+clone renders the panel without a generation step. Missing anchors, or a missing
+`e2e_pipeline`, degrade to the two-panel layout with the regeneration command
+printed — the panel is an extra and should not be able to take the composite
+down. Verified both ways: 1540x1092 with anchors, 1026x900 without.
+
+**These anchors are for pipeline validation, not for a training run.** They were
+clustered from nuScenes-**mini**, whose 344 complete 6-step futures split into
+292 straight, 30 left and 22 right. Twenty-two samples do not characterise right
+turns. Upstream clustered full trainval (~28k). Regenerate with:
+
+```bash
+python ../diffusiondrive_planner/tools/gen_plan_anchors.py \
+    --dataroot <nuScenes> --version v1.0-trainval \
+    --out ../diffusiondrive_planner/data/kmeans --k 6 --mode per_command
+```
+
+Two conventions that bite, both recorded because neither announces itself:
+
+- **Command order is `(right, left, straight)`** — DiffusionDrive's own, from
+  `gen_plan_anchors.py`'s `CMD_RIGHT, CMD_LEFT, CMD_STRAIGHT = 0, 1, 2`. The
+  SparseDrive `EgoPlanner` uses `(right, straight, left)`. Mixing them silently
+  turns commanded left turns into straight-aheads.
+- **The planning frame is `x` lateral, `y` forward**, transposed from this
+  package's `x` forward, `y` left. Getting it wrong rotates every anchor 90
+  degrees while leaving all the shapes looking entirely plausible.
