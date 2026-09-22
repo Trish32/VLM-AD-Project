@@ -370,70 +370,29 @@ def diffusiondrive_anchor_planner(anchor_npy: str, dt: float = 0.5,
     """Candidate set from DiffusionDrive's learned trajectory vocabulary.
 
     WHAT THIS IS, AND IS NOT.  This uses DiffusionDrive's `kmeans_plan_6.npy`
-    anchors — the (3 commands x 6 anchors x 6 steps x 2) vocabulary its head
-    denoises from — as the candidate set handed to the safety filter. It does NOT
-    run the truncated-diffusion denoiser, because `DiffPlanner.forward` requires
-    `feature_maps` and `agent_feature` from the Sparse4D image backbone, and in
-    closed loop the ego diverges from the logged pose, so those images describe a
-    scene the car is no longer in. Features from the wrong place are worse than no
-    features. Call this "DiffusionDrive anchors", never "DiffusionDrive".
+    anchors -- the (3 commands x 6 anchors x 6 steps x 2) vocabulary its head
+    denoises from -- as the candidate set handed to the safety filter. It does
+    NOT run the truncated-diffusion denoiser, because `DiffPlanner.forward`
+    requires `feature_maps` and `agent_feature` from the Sparse4D image backbone,
+    and in closed loop the ego diverges from the logged pose, so those images
+    describe a scene the car is no longer in.
 
-    Even so it is a real upgrade on hand-made straight lines: the shapes and the
-    speed range are learned from driving data, and the command structure matches
-    the head's.
-
-    FRAME.  The anchors live in DiffusionDrive's planning frame, x = lateral
-    (right positive), y = forward. This package uses x = forward, y = left. So
-    (x, y)_ego = (y_dd, -x_dd). Getting this wrong rotates every anchor 90 degrees
-    while leaving all the shapes looking plausible, which is precisely the kind of
-    silent convention error that does not announce itself.
-
-    COMMANDS follow the generator: 0 = right, 1 = left, 2 = straight.
-
-    SPEED CONDITIONING.  Raw anchors are absolute waypoints and carry the speed of
-    whatever manoeuvre they were clustered from — measured here, one command's six
-    anchors imply 0.1 to 14.6 m/s. Offered unmodified to a car doing 5 m/s, four of
-    six fail the dynamics gate on acceleration alone, and the filter emergency-brakes
-    with nothing to choose from (93 brakes across five scenes, against 55 for a
-    speed-aware stand-in).
-
-    That is not an anchor defect; it is what the denoiser is for. DiffusionDrive
-    conditions on ego state and deforms the anchor into something reachable, and
-    skipping that step leaves a shape prior masquerading as a candidate set. With
-    `speed_condition` the along-track extent is rescaled to a reachable speed while
-    the lateral profile is preserved — a crude stand-in for the denoiser, but it
-    makes the comparison about trajectory SHAPE rather than about arithmetic the
-    denoiser would have done.
+    Speed conditioning delegates to `vlm_planner.intent_conditioned_planner`,
+    which re-times the anchors PER STEP. An earlier version here clipped the
+    horizon-average speed and therefore did nothing: at dt=0.5 s and 3 m/s^2 the
+    opening waypoint can only move +-1.5 m/s worth of distance, so an anchor
+    whose first step is too aggressive fails the dynamics gate however sensible
+    its endpoint looks. In closed loop that deadlocked the car -- once stopped,
+    every candidate demanded ~16 m/s^2 off the line, nothing was feasible, and
+    the filter emergency-braked forever.
     """
-    raw = np.load(anchor_npy)                      # (3, K, T, 2) in DD frame
-    if raw.ndim != 4 or raw.shape[0] != 3 or raw.shape[-1] != 2:
-        raise ValueError(f'expected (3, K, T, 2) anchors, got {raw.shape}')
-    # DD (lateral, forward) -> ego (forward, left)
-    anchors = np.stack([raw[..., 1], -raw[..., 0]], axis=-1)
+    from .vlm_planner import DrivingIntent, intent_conditioned_planner
+
+    inner = intent_conditioned_planner(anchor_npy, dt=dt, max_accel=max_accel)
 
     def plan(scene: SceneRepresentation, command: int):
-        cmd = int(np.clip(command, 0, 2))
-        cands = anchors[cmd].astype(np.float64).copy()    # (K, T, 2)
-        T = cands.shape[1]
-
-        if speed_condition:
-            v0 = scene.ego.speed
-            reach_lo = max(0.0, v0 - max_accel * T * dt)
-            reach_hi = v0 + max_accel * T * dt
-            for i in range(len(cands)):
-                span = float(np.linalg.norm(cands[i, -1]))
-                implied = span / (T * dt)
-                if implied < 1e-3:
-                    continue
-                target = float(np.clip(implied, reach_lo, reach_hi))
-                # Scale along-track only: the lateral profile is the shape we are
-                # actually testing and must survive the rescale.
-                cands[i] *= target / implied
-        # Prefer anchors whose implied speed is closest to what the car is doing;
-        # a standing start should not be handed a 14 m/s highway anchor as its
-        # top-scored option.
-        v = max(scene.ego.speed, 0.1)
-        implied = np.linalg.norm(cands[:, -1, :], axis=1) / (cands.shape[1] * dt)
-        scores = 1.0 / (1.0 + np.abs(implied - v))
-        return cands, scores / scores.sum()
+        # Hold current speed, with a floor so a stopped car can pull away.
+        v = max(scene.ego.speed, 2.0) if speed_condition else scene.ego.speed
+        intent = DrivingIntent(command='straight', target_speed_mps=v)
+        return inner(scene, intent)
     return plan

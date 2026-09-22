@@ -206,6 +206,21 @@ Five metric families ([metrics.py](metrics.py)), definitions pinned by tests:
 
 Planning stack runs at **20–55 Hz**, dominated by the safety filter (~25 ms).
 
+### Visualising a rollout
+
+```bash
+python -m e2e_pipeline.visualize --scene 7 --steps 16 \
+    --out e2e_pipeline/assets/closed_loop.gif
+```
+
+![closed loop](assets/closed_loop.gif)
+
+Per step: free space (teal drivable, red obstacle, grey unobserved), agent
+footprints, every candidate coloured by what the safety filter did with it, the
+chosen trajectory, and a live readout of the per-candidate verdicts and running
+metrics. A rollout that flows and one that emergency-brakes every step look
+completely different, which is the point -- the verdict column names the gate.
+
 ### What the closed loop found
 
 **Risk-gate behaviour is set by noise calibration, not geometry.** The first
@@ -215,6 +230,15 @@ top single agent 0.124, median 0.0000, but 31 parked cars compounding through
 σ, and a detector-grade `vel_noise=1.0 m/s` prior was applied to a GT oracle whose
 velocities are exact. Same scene, same cars: **risk 0.475 → 0.039** from the prior
 alone. `WorldModel.measurement_noise()` now makes the source declare its fidelity.
+
+**The risk gate is the binding constraint, alone.** Isolated on scene-0061: with
+the risk model attached, 0/6 candidates feasible, every rejection reading
+`risk 1.000 > 0.05`. With it disabled, **6/6 feasible and no other gate fires** --
+clearance, drivable area and dynamics all pass. So the over-conservatism is not
+geometric and not dynamic; it is entirely the probability model's calibration,
+and per-agent risk compounding through `1 - prod(1 - p)` saturates before
+geometry gets a say. Tuning `max_risk` without fixing the compounding would just
+move the threshold, not the behaviour.
 
 **Anchors are not a planner.** DiffusionDrive's anchors imply 0.1–14.6 m/s; offered
 unmodified to a car at 5 m/s, four of six fail the dynamics gate on acceleration,
@@ -232,10 +256,12 @@ A shape prior is not a candidate set.
 - **This is not DiffusionDrive.** `DiffPlanner.forward` needs `feature_maps` and
   `agent_feature` from the Sparse4D image backbone; once the ego diverges, those
   images describe a scene the car is not in. Only the anchor vocabulary is used.
-- **The speed-conditioning variant does not work yet.** It clips the horizon-average
-  speed, but the binding constraint is the per-step accel limit (±1.5 m/s over
-  0.5 s), so it never engages — hence identical numbers to raw. Fixing it means
-  conditioning the first step, not the endpoint.
+- Speed conditioning is now per-step (it delegates to
+  `vlm_planner.intent_conditioned_planner`). The earlier horizon-average version
+  never engaged, and in closed loop it deadlocked the car: once stopped, every
+  candidate demanded ~16 m/s² off the line. That is fixed — no candidate now
+  fails on acceleration — but it did not change the brake counts, because the
+  risk gate was rejecting everything anyway.
 
 ## Measuring whether this helps
 
