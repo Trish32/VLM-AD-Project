@@ -41,6 +41,8 @@ import numpy as np
 from .freespace import FreeSpace, FreeSpaceExtractor, GridConfig
 from .metrics import StepRecord, evaluate, format_report
 from .safety_filter import SafetyFilter
+from .world_model import (AnalyticCritic, KinematicWorldModel,
+                          plan_with_world_model)
 from .scene import Agent, EgoState, SceneRepresentation
 from .uncertainty import RiskModel, TrackCovarianceTracker
 
@@ -88,6 +90,8 @@ class LoopConfig:
     ego_width: float = 1.8
     initial_speed: float = 5.0
     substeps: int = 10               # KBM Euler sub-steps per dt
+    use_world_model: bool = False    # rank filter survivors by rollout score
+    rollout_steps: int = 0           # 0 = use the full candidate horizon
 
 
 class ClosedLoopRunner:
@@ -103,7 +107,13 @@ class ClosedLoopRunner:
                  planner: Callable[[SceneRepresentation, int], tuple],
                  config: LoopConfig | None = None,
                  safety: SafetyFilter | None = None,
-                 tracker: TrackCovarianceTracker | None = None) -> None:
+                 tracker: TrackCovarianceTracker | None = None,
+                 latent_model=None, critic=None) -> None:
+        # NOTE two distinct senses of "world model" meet here. `world` is the
+        # ENVIRONMENT the ego drives in (GTWorldModel, the oracle). `latent_model`
+        # is the PREDICTIVE model the planner imagines with before acting. They
+        # are unrelated objects; the shared word is unfortunate and is called out
+        # rather than left for a reader to trip over.
         from controller import TrajectoryController
         # The simulator has its OWN EgoState (world pose x/y/yaw/v), distinct from
         # scene.EgoState (ego-frame dimensions + speed). Aliased so the collision
@@ -112,6 +122,9 @@ class ClosedLoopRunner:
         from kbm import KinematicBicycleModel
 
         self.world = world
+        self.latent_model = latent_model or KinematicWorldModel(
+            wheelbase=(config or LoopConfig()).wheelbase)
+        self.critic = critic or AnalyticCritic(dt=(config or LoopConfig()).dt)
         self.planner = planner
         self.cfg = config or LoopConfig()
         self.safety = safety or SafetyFilter(dt=self.cfg.dt)
@@ -172,6 +185,23 @@ class ClosedLoopRunner:
             result = self.safety(candidates, scene, scores,
                                  RiskModel(ego=ego, tracker=self.tracker))
             lat['safety_filter'] = (time.perf_counter() - t0) * 1000
+
+            # Rollout ranking, strictly AFTER the hard gate and strictly among
+            # its survivors: the critic expresses a preference, never a veto
+            # reversal. On an emergency there is nothing admissible to rank.
+            lat['world_model'] = 0.0
+            if cfg.use_world_model and not result.emergency:
+                t0 = time.perf_counter()
+                admissible = [v_.index for v_ in result.verdicts if v_.feasible]
+                if admissible:
+                    ranked = plan_with_world_model(
+                        candidates, scene, model=self.latent_model,
+                        critic=self.critic, dt=cfg.dt, admissible=admissible)
+                    best = ranked[0]
+                    result.trajectory = np.asarray(candidates[best.index],
+                                                   dtype=np.float64)
+                    result.chosen_index = best.index
+                lat['world_model'] = (time.perf_counter() - t0) * 1000
 
             t0 = time.perf_counter()
             traj = np.asarray(result.trajectory, dtype=np.float64)
