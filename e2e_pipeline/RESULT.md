@@ -338,6 +338,54 @@ The other first-pass finding stands: progress is constant across candidates
 cancels in ranking while carrying an unbounded metre scale that would dominate
 the bounded terms the moment candidate lengths diverge.
 
+### Reactive agents: the fix that should have worked, and didn't
+
+The diagnosis above said the critic loses because it sees nothing the filter
+lacks. The obvious remedy is induced behaviour -- a footprint sweep against
+frozen agents can never represent that cutting in front of a vehicle makes it
+brake. `ReactiveWorldModel` adds that: IDM longitudinal response for any agent
+whose lane the ego occupies ahead of it. Lateral evasion is deliberately not
+modelled, because assuming a driver swerves rather than brakes would make
+dangerous candidates look safe.
+
+It produces the intended physics. Agent closing at 12 m/s with the ego 8 m
+ahead:
+
+| model | agent speed over 3 s | gap |
+|---|---|---|
+| constant velocity | 12.0 -> 12.0 m/s | +8.0 -> **-10.0 m** (drives through the ego) |
+| reactive | 12.0 -> **2.3 m/s** | +8.0 -> +8.5 m |
+
+Closed-loop outcome, unchanged to three significant figures:
+
+| | brakes | collisions | completion | min-clear |
+|---|---|---|---|---|
+| filter only | **143** | **35** | **27.6%** | **1.37 m** |
+| + const-velocity rollout | 149 | 39 | 26.1% | 0.92 m |
+| + reactive rollout | 149 | 39 | 26.1% | 0.92 m |
+
+### Why the harness, not the critic, is the binding constraint
+
+Instrumenting every step of the 10-scene run explains all three negative
+results at once:
+
+    200 steps total
+     57 rankable (at least one feasible candidate, no emergency brake)  -- 28.5%
+     26/57 steps where const-velocity ranking overrides the filter's pick
+     22/57 steps where reactive ranking overrides it
+
+**71.5% of steps have no admissible candidate at all.** On those the critic is
+not consulted, because there is nothing to rank -- so three quarters of the
+rollout machinery's opportunity to help never arrives. On the 28.5% that remain
+it does override the filter, often (~40% of them), and those overrides are net
+harmful.
+
+So the ceiling here is not the critic's design. It is that the GT corridor is a
+10 m band around a curving logged route, the anchors project ~46 m forward at
+15 m/s, and almost everything leaves the corridor. Improving the ranker cannot
+fix a pipeline that spends most of its time with nothing to rank. That is the
+finding, and it is a harness result rather than a planning result.
+
 ### What would make it worth revisiting
 
 A critic with information the filter does not have -- a learned value function,

@@ -343,3 +343,69 @@ def plan_with_world_model(candidates: np.ndarray, scene: SceneRepresentation,
                                    score=sc, states=states))
     out.sort(key=lambda r: r.score.total, reverse=True)
     return out
+
+
+# --- reactive agents --------------------------------------------------------
+#
+# The constant-velocity model above cannot explain why rollout ranking lost to
+# the safety filter: it re-derives quantities the filter's swept-footprint check
+# already has. A critic only earns its cost if it sees something the gate cannot,
+# and the obvious candidate is INDUCED BEHAVIOUR -- that cutting in front of a
+# vehicle makes it brake, which a footprint sweep against frozen agents can never
+# represent.
+
+IDM_A_MAX = 1.5        # m/s^2, comfortable acceleration
+IDM_B = 2.0            # m/s^2, comfortable deceleration
+IDM_T = 1.5            # s, desired time headway
+IDM_S0 = 2.0           # m, minimum standstill gap
+LANE_HALF_WIDTH = 1.8  # m, lateral band within which the ego is "in the way"
+
+
+class ReactiveWorldModel(KinematicWorldModel):
+    """Agents brake for the ego instead of ignoring it.
+
+    Longitudinal response only, via IDM: an agent whose heading puts the ego
+    inside `LANE_HALF_WIDTH` of its path, and ahead of it, decelerates toward a
+    safe headway. Lateral evasion is deliberately NOT modelled -- predicting that
+    a driver swerves rather than brakes is a claim about intent that a two-line
+    heuristic has no business making, and assuming evasion would make dangerous
+    candidates look safe. Braking-only is the conservative half.
+
+    This is what makes the rollout non-trivial: with frozen agents, f(z, a) is
+    just the ego's kinematics replayed, and the critic reports what the filter
+    already knows. With reaction, two candidates that are both admissible now can
+    lead to visibly different futures.
+    """
+
+    def __init__(self, wheelbase: float = 2.85, accel_noise: float = 0.6,
+                 react: bool = True) -> None:
+        super().__init__(wheelbase=wheelbase, accel_noise=accel_noise)
+        self.react = bool(react)
+
+    def step(self, z: LatentState, a: Action, dt: float) -> LatentState:
+        out = super().step(z, a, dt)
+        if not self.react:
+            return out
+
+        ego = out.ego_xy
+        for ag in out.agents:
+            v = np.asarray(ag.vxy, dtype=np.float64)
+            speed = float(np.linalg.norm(v))
+            if speed < 0.5:
+                continue                       # parked: nothing to slow down
+            fwd = v / speed
+            lat = np.array([-fwd[1], fwd[0]])
+            rel = ego - np.asarray(ag.xy, dtype=np.float64)
+            gap = float(rel @ fwd)             # + means ego is ahead of the agent
+            offset = abs(float(rel @ lat))
+            if gap <= 0.0 or offset > LANE_HALF_WIDTH:
+                continue                       # ego is behind, or out of its lane
+
+            # IDM: desired gap grows with speed and closing rate.
+            closing = speed - out.ego_v
+            s_star = (IDM_S0 + max(0.0, speed * IDM_T +
+                                   speed * closing / (2 * np.sqrt(IDM_A_MAX * IDM_B))))
+            decel = IDM_A_MAX * (s_star / max(gap, 0.5)) ** 2
+            new_speed = max(0.0, speed - min(decel, IDM_B * 3.0) * dt)
+            ag.vxy = fwd * new_speed
+        return out
