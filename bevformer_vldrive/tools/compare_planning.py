@@ -62,7 +62,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--decisions',
-                    default=str(ROOT / 'eval_results' / 'detector_comparison.json'))
+                    default=str(ROOT / 'eval_results' / 'detector_comparison_bev.json'))
     ap.add_argument('--anchors',
                     default=str(REPO / 'diffusiondrive_planner' / 'data' / 'kmeans'
                                 / 'kmeans_plan_6.npy'))

@@ -15,34 +15,34 @@
  "anchors": "/Users/trish/VLMProjects/diffusiondrive_planner/data/kmeans/kmeans_plan_6.npy",
  "pairwise": {
   "bevformer vs bevfusion-robust": {
-   "endpoint_m": 1.3564117527795407,
-   "path_m": 0.7041795681236104,
-   "frames_decision_differs": 22
+   "endpoint_m": 3.160356657000292,
+   "path_m": 1.6094000858974875,
+   "frames_decision_differs": 43
   },
   "bevformer vs bevfusion-mit": {
-   "endpoint_m": 1.2928751553858728,
-   "path_m": 0.6664491814908392,
-   "frames_decision_differs": 21
+   "endpoint_m": 2.7331774297669,
+   "path_m": 1.3731114756080305,
+   "frames_decision_differs": 38
   },
   "bevformer vs ground-truth": {
-   "endpoint_m": 1.3287614051265275,
-   "path_m": 0.6617400038155056,
-   "frames_decision_differs": 23
+   "endpoint_m": 2.921872407523039,
+   "path_m": 1.4404895264626707,
+   "frames_decision_differs": 37
   },
   "bevfusion-robust vs bevfusion-mit": {
-   "endpoint_m": 0.6470522073801335,
-   "path_m": 0.3155979465524,
-   "frames_decision_differs": 12
+   "endpoint_m": 2.348599168666091,
+   "path_m": 1.1874979224728714,
+   "frames_decision_differs": 33
   },
   "bevfusion-robust vs ground-truth": {
-   "endpoint_m": 1.4907052390515365,
-   "path_m": 0.7425176592331572,
-   "frames_decision_differs": 25
+   "endpoint_m": 2.5984854878702266,
+   "path_m": 1.3111036948418406,
+   "frames_decision_differs": 34
   },
   "bevfusion-mit vs ground-truth": {
-   "endpoint_m": 1.3355385620617723,
-   "path_m": 0.6735642570586652,
-   "frames_decision_differs": 22
+   "endpoint_m": 1.9513677330438752,
+   "path_m": 0.9701406850898133,
+   "frames_decision_differs": 25
   }
  }
 }

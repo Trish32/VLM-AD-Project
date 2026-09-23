@@ -474,6 +474,27 @@ sampling.
 ~8.4 pp standard error on a difference. The human reference is an imitation
 proxy, and it is too coarse to rank detectors either way.
 
+### It survives into the trajectory
+
+`tools/compare_planning.py` carries each arm's decision through `DrivingIntent`
+-> DiffusionDrive anchors and measures divergence in metres. Distance from the
+ground-truth arm's trajectories orders by detector quality, same as the decisions
+do:
+
+| arm | mAP | endpoint vs GT | frames whose decision differs |
+|---|---|---|---|
+| BEVFormer-Tiny | 0.163 | 2.92 m | 37/81 |
+| BEVFusion robust | 0.468 | 2.60 m | 34/81 |
+| BEVFusion MIT det | 0.578 | **1.95 m** | **25/81** |
+
+On the frames where two arms actually disagree the paths separate by ~5.8-6.4 m
+at the horizon. So the effect is not confined to a categorical token: a better
+detector puts the car measurably closer to where perfect perception would have
+put it.
+
+For comparison, the 3-channel decisions gave 1.29-1.49 m mean divergence with no
+ordering by mAP -- the same flattening the decision agreement showed.
+
 ### Cost worth knowing
 
 Sending the raster roughly triples wall-clock. In the 3-channel study the only
