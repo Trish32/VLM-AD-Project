@@ -4,6 +4,23 @@ The integration layer between the perception ports and the planner: dense + obje
 perception fused into one scene representation, uncertainty plumbed end to end, and a
 safety gate that can veto the learned plan.
 
+![closed-loop rollout](assets/closed_loop_scene-0796.gif)
+
+*scene-0796, 24 closed-loop steps at 15.3 m/s. **Left:** the front camera with 3-D
+agent boxes and the chosen plan laid on the road surface. **Right:** the occupancy
+branch reduced to what the planner consumes — drivable / unknown / obstacle — with all
+six DiffusionDrive candidates coloured by the filter's verdict. **Below:** the five
+metric families, live. The run ends with 0 collisions, 3 emergency brakes in 24 steps
+and 67.8% route completion.*
+
+One thing in that picture is not literally true, and the overlay says so rather than
+hiding it. The loop simulates ego motion, so the ego drifts off the logged trajectory
+— and nuScenes has no camera frame from a pose the car never occupied. The overlay
+projects world-frame geometry through the **logged** camera: the projection is exact,
+the viewpoint is logged, and the gap between the two poses is printed in the panel
+header (`sim ego 19.2 m away`). Watch it grow across the clip. That number is also
+why the teal corridor slides off-centre in the occupancy panel late in the run.
+
 
 ## Layout
 
@@ -147,7 +164,7 @@ constant-velocity rollout with honestly growing covariance.
 conda run -n simple_bev_vldrive python -m pytest e2e_pipeline/tests/ -q
 ```
 
-74 tests, ~0.5 s. Each gate has a test that isolates it: a candidate fine on every axis
+95 tests, ~0.7 s. Each gate has a test that isolates it: a candidate fine on every axis
 except one, which must be rejected for that one reason.
 
 ---
@@ -156,7 +173,7 @@ except one, which must be rejected for that one reason.
 
 Planning stack runs at **20-55 Hz** against a GT world model. 95 tests.
 
-Two findings the closed loop surfaced, both invisible to unit tests:
+Four findings the closed loop surfaced, all invisible to unit tests:
 
 - **Risk-gate behaviour is set by noise calibration, not geometry.** The same
   31 parked cars gave risk 0.475 with a detector-grade prior and 0.039 with a
@@ -164,10 +181,28 @@ Two findings the closed loop surfaced, both invisible to unit tests:
 - **Collision geometry, not the compounding formula, was inflating risk.** A
   circumscribed disc over-reports broadside separation by 3.14 m; the
   rectangle support function took scene-0061 from `risk 1.000` to `0.43`.
+- **The rollout was seeded at a constant 5 m/s regardless of the scene.** Logged
+  frame-0 speeds in nuScenes-mini span 0 to 15.3 m/s, so the ego began every
+  rollout at the wrong speed and diverged from the drivable corridor on step one,
+  which then rejected every candidate. Seeding from the log instead:
+
+  | scene | brakes/24 | route | collisions | min clearance |
+  |---|---|---|---|---|
+  | 0796 | 12 → **3** | 7.3% → **67.8%** | 2 → **0** | 0.00 → **3.88 m** |
+  | 0061 | 24 → **12** | 7.4% → **55.5%** | 0 → **0** | 3.17 → 1.94 m |
+  | 0655 | 11 → **11** | 17.8% → **39.5%** | 2 → **0** | 0.00 → **2.60 m** |
+
+  Collisions went to zero on every scene where the ego actually drives. The
+  "conservative filter" reading of the old numbers was wrong: the filter was
+  reacting correctly to a badly initialised ego.
+- **Route completion was scoring parked cars at 94%.** scene-0553's logged route
+  is 4 cm of GPS jitter, and a `total > 0` guard divided by it happily — so a run
+  that emergency-braked all 24 steps scored 94.3% completion. Routes under
+  `MIN_ROUTE_M = 5.0` now report `completion: None`, not a number.
 
 Method, ablations, retractions and caveats: **[RESULT.md](RESULT.md)**.
 
 ```bash
-python -m e2e_pipeline.visualize --scene 7 --steps 16
+python -m e2e_pipeline.visualize                  # scene-0796, the GIF above
 python -m pytest e2e_pipeline/tests/ -q
 ```

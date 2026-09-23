@@ -262,6 +262,52 @@ class GTWorldModel:
     def route(self) -> np.ndarray:
         return self._route
 
+    def initial_speed(self) -> float:
+        """Logged ego speed at t=0, so the rollout starts where the scene does.
+
+        Seeding a fixed speed instead makes the ego diverge from the logged
+        corridor on step one for no reason other than the constant being wrong:
+        nuScenes-mini ego speeds at frame 0 span 0 to 12 m/s.
+        """
+        if len(self._route) < 2:
+            return 0.0
+        return float(np.linalg.norm(self._route[1] - self._route[0]) / self.dt)
+
+    def camera_at(self, t: float) -> dict:
+        """Front camera at the LOGGED pose, with an exact world->image matrix.
+
+        There is no camera image at the *simulated* pose and there cannot be:
+        nuScenes only holds frames from where the car actually drove. So this
+        returns the logged camera, and callers project world-frame geometry
+        through it. That projection is exact -- an agent box or a planned path
+        expressed in world coordinates lands in the right pixels -- it is simply
+        seen from the logged viewpoint rather than the simulated one. The
+        distance between the two poses is returned as `divergence_m` so the
+        overlay can state it rather than let the viewer assume it is zero.
+        """
+        fr = self._frame(t)
+        sample = self.nusc.get('sample', fr['token'])
+        sd = self.nusc.get('sample_data', sample['data']['CAM_FRONT'])
+        cs = self.nusc.get('calibrated_sensor', sd['calibrated_sensor_token'])
+        ep = self.nusc.get('ego_pose', sd['ego_pose_token'])
+
+        K = np.eye(4)
+        K[:3, :3] = np.asarray(cs['camera_intrinsic'], dtype=np.float64)
+        R_e = self._Q(ep['rotation']).rotation_matrix
+        t_e = np.asarray(ep['translation'], dtype=np.float64)
+        R_c = self._Q(cs['rotation']).rotation_matrix
+        t_c = np.asarray(cs['translation'], dtype=np.float64)
+
+        T_we = np.eye(4)                      # world -> ego
+        T_we[:3, :3], T_we[:3, 3] = R_e.T, -R_e.T @ t_e
+        T_ec = np.eye(4)                      # ego -> camera
+        T_ec[:3, :3], T_ec[:3, 3] = R_c.T, -R_c.T @ t_c
+
+        return {'path': self.nusc.get_sample_data_path(sd['token']),
+                'P': K @ T_ec @ T_we,
+                'ego_xy': np.asarray(ep['translation'][:2], dtype=np.float64),
+                'ego_yaw': float(self._Q(ep['rotation']).yaw_pitch_roll[0])}
+
     def _frame(self, t: float) -> dict:
         return self.samples[int(np.clip(round(t / self.dt), 0, len(self.samples) - 1))]
 

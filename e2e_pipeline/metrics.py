@@ -171,6 +171,10 @@ def safety_metrics(records: list[StepRecord], ego_length: float = 4.6,
     }
 
 
+# Shorter than this and the logged "route" is parking jitter, not a route.
+MIN_ROUTE_M = 5.0
+
+
 def route_completion(records: list[StepRecord], route: np.ndarray) -> dict:
     """Fraction of the reference route's arc length actually made good.
 
@@ -178,6 +182,12 @@ def route_completion(records: list[StepRecord], route: np.ndarray) -> dict:
     projection — a vehicle that overshoots then reverses should not lose credit
     for ground it covered. Lateral deviation is tracked separately so "completed
     the route" cannot be claimed by a run that cut every corner.
+
+    A scene where the ego never drove has no route to complete, and scoring one
+    anyway produces nonsense: nuScenes scene-0553 is a parked car whose logged
+    "route" is 4 cm of GPS jitter, so a guard of `total > 0` let the ego's own
+    jitter score 94.3% completion while emergency-braking on all 24 steps. Any
+    route shorter than MIN_ROUTE_M is reported as undefined rather than scored.
     """
     route = np.asarray(route, dtype=np.float64)
     if len(route) < 2:
@@ -204,7 +214,8 @@ def route_completion(records: list[StepRecord], route: np.ndarray) -> dict:
         devs.append(d_here)
 
     return {
-        'completion': float(best_s / total) if total > 0 else None,
+        'completion': float(best_s / total) if total >= MIN_ROUTE_M else None,
+        'degenerate_route': total < MIN_ROUTE_M,
         'progress_m': float(best_s),
         'route_length_m': total,
         'mean_lateral_dev_m': float(np.mean(devs)) if devs else None,

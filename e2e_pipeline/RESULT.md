@@ -135,28 +135,75 @@ Five metric families ([metrics.py](metrics.py)), definitions pinned by tests:
 
 ### Results, 20 steps/scene, GT world model
 
-| planner | brakes | collisions | mean completion |
-|---|---|---|---|
-| speed-aware stand-in | 55 | 21 | 28.5% |
-| DiffusionDrive anchors (raw) | 93 | 20 | 28.3% |
-| DiffusionDrive anchors (speed-conditioned) | 93 | 20 | 28.3% |
+All 10 mini scenes, 20 steps each, totals across scenes. Completion is averaged
+over the 8 scenes with a non-degenerate route (see below).
 
-Planning stack runs at **20–55 Hz**, dominated by the safety filter (~25 ms).
+| planner | ego seed | brakes | collisions | mean completion |
+|---|---|---|---|---|
+| speed-aware stand-in | 5 m/s constant | 112 | 27 | 20.4% |
+| speed-aware stand-in | **logged frame-0** | **99** | **10** | **35.2%** |
+| DiffusionDrive anchors | 5 m/s constant | 168 | 37 | 11.0% |
+| DiffusionDrive anchors | **logged frame-0** | **143** | **35** | **27.6%** |
+
+Two things to read off this, neither flattering:
+
+**The ego seed mattered more than the planner.** Seeding from the log cut
+collisions by 63% for the stand-in and lifted completion by ~15 points for both
+arms -- a larger effect than the choice of planner. See "Seeding the rollout"
+below.
+
+**The DiffusionDrive anchors lose to the stand-in**, on every column, under both
+seedings. That is the expected result and it is worth stating rather than
+burying: only the anchor *vocabulary* is in play here, not DiffusionDrive. The
+truncated-diffusion denoiser that makes those anchors scene-appropriate needs
+image features from a backbone this harness does not run, so the anchors arrive
+as a fixed set of 6 shapes with no knowledge of the scene, while the stand-in at
+least respects the current speed. Anchors without the denoiser are not the
+method; they are its initialisation.
+
+Planning stack runs at **20-55 Hz**, dominated by the safety filter (~25 ms).
+
+An earlier revision of this table reported 55/93 brakes and ~28.5% completion.
+Those numbers predate both the rectangle-support-function fix and the seeding
+fix and should not be compared against these.
 
 ### Visualising a rollout
 
 ```bash
-python -m e2e_pipeline.visualize --scene 7 --steps 16 \
-    --out e2e_pipeline/assets/closed_loop.gif
+python -m e2e_pipeline.visualize          # scene-0796, 24 steps
 ```
 
-![closed loop](assets/closed_loop.gif)
+![closed loop](assets/closed_loop_scene-0796.gif)
 
-Per step: free space (teal drivable, red obstacle, grey unobserved), agent
-footprints, every candidate coloured by what the safety filter did with it, the
-chosen trajectory, and a live readout of the per-candidate verdicts and running
-metrics. A rollout that flows and one that emergency-brakes every step look
-completely different, which is the point -- the verdict column names the gate.
+Layout follows `diffusiondrive_planner/assets/demo_scene-0916.gif`: camera left,
+occupancy right, metric tiles beneath.
+
+**Camera.** 3-D agent boxes and the chosen plan projected onto the road surface.
+This is the panel where a bad detection is obvious -- a box floating off a car is
+visible here and invisible in a BEV raster.
+
+**Occupancy.** The dense branch reduced to what the planner actually consumes:
+drivable / unknown / obstacle, with all six candidates coloured by the filter's
+verdict. A rollout that flows and one that emergency-brakes every step look
+completely different, which is the point.
+
+**Tiles.** The five metric families, live, each with the number that would appear
+in a report.
+
+#### The camera panel's one dishonesty, and how it is handled
+
+The loop simulates ego motion, so the ego drifts off the logged trajectory -- and
+nuScenes has no camera frame from a pose the car never occupied. There is no fix
+for this inside a log-replay harness; the only question is whether the picture
+admits it.
+
+The overlay projects world-frame geometry through the **logged** camera. The
+projection is exact -- an agent box or a planned path in world coordinates lands
+in the right pixels -- but the viewpoint is the logged one. `camera_at()` returns
+the pose gap alongside the projection matrix and the panel header prints it
+(`sim ego 19.2 m away`), so the caveat scales visibly with the error instead of
+being a footnote. The same divergence is why the drivable corridor slides
+off-centre in the occupancy panel late in the clip.
 
 ### What the closed loop found
 

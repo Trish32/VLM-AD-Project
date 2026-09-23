@@ -1,14 +1,32 @@
 #!/usr/bin/env python3
 """Render a closed-loop rollout as an animated GIF.
 
-Shows what is otherwise only visible in log lines: which candidate trajectories
-the planner proposed, which gates rejected which of them and why, what the
-occupancy branch considered drivable, and where the ego actually went as a
-result. A rollout that emergency-brakes every step and one that flows cleanly
-produce very different pictures, and the difference is the point.
+Layout follows `diffusiondrive_planner/assets/demo_scene-0916.gif`: the camera
+with projected geometry on the left, the occupancy branch on the right, and the
+numbers underneath as discrete tiles rather than a wall of text.
 
-Colour follows the rest of the repo (visualizer.py): dark teal background, teal
-drivable surface, blue ego.
+What each panel is for:
+
+  CAMERA   what the perception branch found, drawn where a human would look for
+           it -- 3-D agent boxes and the chosen plan laid on the road surface.
+           This is the panel that makes a bad detection obvious; a box floating
+           off a car is visible here and invisible in a BEV raster.
+
+  OCCUPANCY  the dense branch reduced to what the planner actually consumes:
+           drivable / unknown / obstacle, plus every candidate trajectory
+           coloured by the filter's verdict. A rollout that emergency-brakes
+           every step and one that flows cleanly look completely different here.
+
+  TILES    the five metric families, each with the number that would appear in
+           a report and a one-word statement of what it measures.
+
+A note on the camera, because it is the one thing in this picture that is not
+literally true: the loop simulates ego motion, so the ego drifts away from the
+logged trajectory, and nuScenes has no image from the simulated pose. The
+overlay projects world-frame geometry through the *logged* camera -- exact
+projection, logged viewpoint -- and prints the divergence between the two poses
+on the panel. When it is small the overlay reads as a normal camera view; when
+it grows, the printed number is the honest caveat.
 
 Usage:
     conda run -n simple_bev_vldrive python -m e2e_pipeline.visualize \\
@@ -17,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import numpy as np
@@ -27,41 +46,54 @@ from .metrics import evaluate
 from .safety_filter import SafetyFilter
 from .scene import ego_footprint_corners
 
-BG = (15, 31, 31)
+# Palette shared with bevformer_vldrive/tools/visualizer.py.
+BG = (11, 20, 20)
+PANEL_BG = (15, 31, 31)
 ROAD = (36, 102, 92)
-UNKNOWN = (52, 58, 58)
+UNKNOWN = (48, 54, 54)
 OBSTACLE = (150, 52, 52)
 EGO = (40, 90, 210)
 EGO_EDGE = (240, 240, 240)
-AGENT = (200, 70, 70)
+AGENT = (210, 80, 80)
 FEASIBLE = (70, 200, 130)
-REJECTED = (120, 60, 60)
-CHOSEN = (250, 220, 90)
-TEXT = (228, 228, 228)
-DIM = (140, 155, 155)
+REJECTED = (122, 62, 62)
+CHOSEN = (250, 196, 60)
+TEXT = (232, 232, 232)
+DIM = (136, 152, 152)
+RULE = (44, 66, 66)
 
-PANEL = 560          # BEV panel side, px
-SIDE = 430           # text panel width, px
-RANGE_M = 40.0       # half-extent of the BEV view, metres
+CAM_W, CAM_H = 820, 461          # 1600x900 front camera, scaled
+BEV = 461                        # occupancy panel, square
+HEAD_H = 34
+STATUS_H = 32
+TILE_H = 152
+W = CAM_W + BEV
+H = HEAD_H + CAM_H + STATUS_H + TILE_H
+
+RANGE_M = 40.0                   # half-extent of the occupancy view, metres
 
 
-def _font(size=13):
-    for p in ('/System/Library/Fonts/Menlo.ttc',
-              '/System/Library/Fonts/SFNSMono.ttf'):
+def _font(size=13, bold=False):
+    names = (('/System/Library/Fonts/Menlo.ttc', 1 if bold else 0),
+             ('/System/Library/Fonts/SFNSMono.ttf', 0))
+    for path, idx in names:
         try:
-            return ImageFont.truetype(p, size)
+            return ImageFont.truetype(path, size, index=idx)
         except OSError:
             pass
     return ImageFont.load_default()
 
 
+# ---------------------------------------------------------------------------
+# Occupancy panel (ego frame, forward = up)
+# ---------------------------------------------------------------------------
+
+
 def _to_px(xy: np.ndarray) -> np.ndarray:
     """Ego-frame metres -> panel pixels, forward = up, left = left."""
     xy = np.atleast_2d(np.asarray(xy, dtype=np.float64))
-    s = PANEL / (2 * RANGE_M)
-    col = PANEL / 2 - xy[:, 1] * s          # +y (left) -> left on screen
-    row = PANEL / 2 - xy[:, 0] * s          # +x (forward) -> up
-    return np.stack([col, row], axis=1)
+    s = BEV / (2 * RANGE_M)
+    return np.stack([BEV / 2 - xy[:, 1] * s, BEV / 2 - xy[:, 0] * s], axis=1)
 
 
 def _draw_freespace(draw: ImageDraw.ImageDraw, fs) -> None:
@@ -71,133 +103,271 @@ def _draw_freespace(draw: ImageDraw.ImageDraw, fs) -> None:
     nx, ny = fs.traversable.shape
     for ix in range(0, nx, step):
         for iy in range(0, ny, step):
-            block_t = fs.traversable[ix:ix + step, iy:iy + step]
-            block_o = fs.obstacle[ix:ix + step, iy:iy + step]
-            block_u = fs.unknown[ix:ix + step, iy:iy + step]
-            if block_o.any():
+            if fs.obstacle[ix:ix + step, iy:iy + step].any():
                 c = OBSTACLE
-            elif block_u.all():
+            elif fs.unknown[ix:ix + step, iy:iy + step].all():
                 c = UNKNOWN
-            elif block_t.any():
+            elif fs.traversable[ix:ix + step, iy:iy + step].any():
                 c = ROAD
             else:
                 continue
-            x0 = ox + ix * res
-            y0 = oy + iy * res
-            p0 = _to_px([[x0, y0]])[0]
-            p1 = _to_px([[x0 + step * res, y0 + step * res]])[0]
+            p0 = _to_px([[ox + ix * res, oy + iy * res]])[0]
+            p1 = _to_px([[ox + (ix + step) * res, oy + (iy + step) * res]])[0]
             draw.rectangle([min(p0[0], p1[0]), min(p0[1], p1[1]),
                             max(p0[0], p1[0]), max(p0[1], p1[1])], fill=c)
 
 
-def _draw_poly(draw, pts_m, colour, width=2, closed=True):
-    px = _to_px(pts_m)
-    seq = [tuple(p) for p in px]
+def _poly(draw, pts_m, colour, width=2, closed=True):
+    seq = [tuple(p) for p in _to_px(pts_m)]
     if closed:
         seq.append(seq[0])
     draw.line(seq, fill=colour, width=width)
 
 
-def render_frame(rec, scene, result, intent_line: str, step: int, n_steps: int,
-                 metrics: dict) -> Image.Image:
-    """One composite: BEV on the left, verdict / metric readout on the right."""
-    img = Image.new('RGB', (PANEL + SIDE, PANEL), BG)
+def _render_bev(scene, result) -> Image.Image:
+    img = Image.new('RGB', (BEV, BEV), PANEL_BG)
     d = ImageDraw.Draw(img)
-    f, fb = _font(13), _font(15)
+    f = _font(11)
 
     _draw_freespace(d, scene.freespace)
 
-    # Range rings, so distances are readable without a scale bar.
+    origin = _to_px([[0, 0]])[0]
     for r in (10, 20, 30):
-        p = _to_px([[0, 0]])[0]
-        rr = r * PANEL / (2 * RANGE_M)
-        d.ellipse([p[0] - rr, p[1] - rr, p[0] + rr, p[1] + rr],
-                  outline=(45, 70, 70))
-        d.text((p[0] + 4, p[1] - rr - 14), f'{r}m', font=f, fill=(70, 95, 95))
+        rr = r * BEV / (2 * RANGE_M)
+        d.ellipse([origin[0] - rr, origin[1] - rr,
+                   origin[0] + rr, origin[1] + rr], outline=(46, 72, 72))
+        d.text((origin[0] + 4, origin[1] - rr - 12), f'{r}m',
+               font=f, fill=(74, 100, 100))
 
     for a in scene.agents:
-        _draw_poly(d, ego_footprint_corners(a.xy, a.yaw, a.lwh[0], a.lwh[1]),
-                   AGENT, width=2)
+        _poly(d, ego_footprint_corners(a.xy, a.yaw, a.lwh[0], a.lwh[1]),
+              AGENT, width=2)
 
-    # Candidates, coloured by whether the filter accepted them.
     for i, v in enumerate(result.verdicts):
-        traj = result.candidates[i]
-        pts = np.vstack([[0.0, 0.0], traj])
-        _draw_poly(d, pts, FEASIBLE if v.feasible else REJECTED,
-                   width=2, closed=False)
+        _poly(d, np.vstack([[0.0, 0.0], result.candidates[i]]),
+              FEASIBLE if v.feasible else REJECTED, width=2, closed=False)
 
     if not result.emergency:
-        pts = np.vstack([[0.0, 0.0], result.trajectory])
-        _draw_poly(d, pts, CHOSEN, width=4, closed=False)
+        _poly(d, np.vstack([[0.0, 0.0], result.trajectory]),
+              CHOSEN, width=4, closed=False)
         for p in _to_px(result.trajectory):
             d.ellipse([p[0] - 3, p[1] - 3, p[0] + 3, p[1] + 3], fill=CHOSEN)
 
     ego_poly = ego_footprint_corners(np.zeros(2), 0.0,
                                      scene.ego.length, scene.ego.width)
-    _draw_poly(d, ego_poly, EGO_EDGE, width=2)
     d.polygon([tuple(p) for p in _to_px(ego_poly)], fill=EGO, outline=EGO_EDGE)
 
-    # ---- readout ----------------------------------------------------------
-    x0, y = PANEL + 14, 12
-    d.line([PANEL, 0, PANEL, PANEL], fill=(50, 75, 75))
-    d.text((x0, y), 'CLOSED LOOP', font=fb, fill=TEXT); y += 22
-    d.text((x0, y), f'step {step + 1}/{n_steps}   t={rec.t:.1f}s', font=f,
-           fill=DIM); y += 24
+    d.text((10, 8), 'OCCUPANCY  +  CANDIDATES', font=_font(12, bold=True),
+           fill=TEXT)
+    d.text((10, BEV - 42), 'teal drivable   grey unknown   red obstacle',
+           font=f, fill=(86, 112, 112))
+    d.text((10, BEV - 27), 'green feasible   dark-red rejected   amber chosen',
+           font=f, fill=(86, 112, 112))
+    return img
 
-    d.text((x0, y), 'EGO', font=fb, fill=TEXT); y += 18
-    d.text((x0, y), f'speed {rec.ego_v:5.2f} m/s', font=f, fill=DIM); y += 16
-    d.text((x0, y), f'accel {rec.accel:+5.2f} m/s^2   steer {rec.steer:+.3f} rad',
-           font=f, fill=DIM); y += 24
 
-    if intent_line:
-        d.text((x0, y), 'VLM INTENT', font=fb, fill=TEXT); y += 18
-        for ln in intent_line.split('\n'):
-            d.text((x0, y), ln[:46], font=f, fill=DIM); y += 16
-        y += 8
+# ---------------------------------------------------------------------------
+# Camera panel (world frame projected through the logged camera)
+# ---------------------------------------------------------------------------
 
-    d.text((x0, y), 'SAFETY FILTER', font=fb, fill=TEXT); y += 18
+
+def _project(P: np.ndarray, pts_w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """World (N,3) -> pixel (N,2) in full-resolution camera coords, + in-front mask."""
+    pts = np.asarray(pts_w, dtype=np.float64).reshape(-1, 3)
+    hom = np.concatenate([pts, np.ones((len(pts), 1))], axis=1)
+    cam = (P @ hom.T).T
+    z = cam[:, 2]
+    ok = z > 0.5
+    uv = np.zeros((len(pts), 2))
+    safe = np.where(ok, z, 1.0)
+    uv[:, 0] = cam[:, 0] / safe
+    uv[:, 1] = cam[:, 1] / safe
+    return uv, ok
+
+
+def _box_corners_3d(xy_w, yaw_w, l, w, h) -> np.ndarray:
+    """Eight corners, world frame, box resting on z = 0 (ego-frame ground)."""
+    x = np.array([1, 1, -1, -1, 1, 1, -1, -1]) * l / 2
+    y = np.array([1, -1, -1, 1, 1, -1, -1, 1]) * w / 2
+    z = np.array([0, 0, 0, 0, 1, 1, 1, 1]) * h
+    c, s = np.cos(yaw_w), np.sin(yaw_w)
+    return np.stack([xy_w[0] + c * x - s * y, xy_w[1] + s * x + c * y, z], axis=1)
+
+
+_EDGES = ((0, 1), (1, 2), (2, 3), (3, 0),
+          (4, 5), (5, 6), (6, 7), (7, 4),
+          (0, 4), (1, 5), (2, 6), (3, 7))
+
+
+def _render_camera(cam_info, rec, scene, result) -> Image.Image:
+    img = Image.open(cam_info['path']).convert('RGB')
+    full_w = img.width
+    img = img.resize((CAM_W, CAM_H), Image.BILINEAR)
+    over = Image.new('RGBA', (CAM_W, CAM_H), (0, 0, 0, 0))
+    od = ImageDraw.Draw(over)
+    P, k = cam_info['P'], CAM_W / full_w
+
+    c, s = np.cos(rec.ego_yaw), np.sin(rec.ego_yaw)
+    R = np.array([[c, -s], [s, c]])           # sim-ego -> world
+
+    def to_world(xy_ego):
+        return (R @ np.asarray(xy_ego, dtype=np.float64).reshape(-1, 2).T).T + rec.ego_xy
+
+    # --- planned path, as a ribbon on the road surface ---------------------
+    if not result.emergency and len(result.trajectory):
+        path = to_world(np.vstack([[0.0, 0.0], result.trajectory]))
+        half = scene.ego.width / 2
+        for i in range(len(path) - 1):
+            seg = path[i + 1] - path[i]
+            n = np.linalg.norm(seg)
+            if n < 1e-6:
+                continue
+            perp = np.array([-seg[1], seg[0]]) / n * half
+            quad = np.array([path[i] + perp, path[i + 1] + perp,
+                             path[i + 1] - perp, path[i] - perp])
+            uv, ok = _project(P, np.column_stack([quad, np.zeros(4)]))
+            if not ok.all():
+                continue
+            fade = int(150 * (1 - i / max(1, len(path) - 1)) + 45)
+            od.polygon([tuple(p * k) for p in uv],
+                       fill=(*CHOSEN, fade), outline=(*CHOSEN, 210))
+
+    # --- agent boxes -------------------------------------------------------
+    for a in scene.agents:
+        if np.linalg.norm(a.xy) > 45.0 or a.xy[0] < 0.5:
+            continue
+        xy_w = to_world(a.xy)[0]
+        corners = _box_corners_3d(xy_w, a.yaw + rec.ego_yaw,
+                                  a.lwh[0], a.lwh[1], a.lwh[2])
+        uv, ok = _project(P, corners)
+        if not ok.all():
+            continue
+        uv = uv * k
+        if uv[:, 0].max() < -50 or uv[:, 0].min() > CAM_W + 50:
+            continue
+        for i, j in _EDGES:
+            od.line([tuple(uv[i]), tuple(uv[j])], fill=(*AGENT, 235), width=2)
+        # Front face filled, so heading is readable at a glance.
+        od.polygon([tuple(uv[i]) for i in (0, 1, 5, 4)], fill=(*AGENT, 46))
+
+    img = Image.alpha_composite(img.convert('RGBA'), over).convert('RGB')
+    d = ImageDraw.Draw(img)
+    div = float(np.linalg.norm(rec.ego_xy - cam_info['ego_xy']))
+    d.rectangle([0, 0, CAM_W, 22], fill=(11, 20, 20))
+    d.text((10, 5), 'CAM_FRONT   3-D detections + planned path',
+           font=_font(12, bold=True), fill=TEXT)
+    txt = f'logged viewpoint · sim ego {div:.1f} m away'
+    d.text((CAM_W - 14 - d.textlength(txt, font=_font(11)), 5), txt,
+           font=_font(11), fill=(168, 168, 116) if div > 3 else DIM)
+    return img
+
+
+# ---------------------------------------------------------------------------
+# Composite
+# ---------------------------------------------------------------------------
+
+
+def _tile(d, x, y, w, label, value, unit, sub, colour):
+    d.rectangle([x, y, x + w, y + TILE_H - 20], fill=PANEL_BG, outline=RULE)
+    d.text((x + 12, y + 10), label, font=_font(11, bold=True), fill=DIM)
+    d.text((x + 12, y + 34), value, font=_font(34, bold=True), fill=colour)
+    if unit:
+        d.text((x + 16 + d.textlength(value, font=_font(34, bold=True)), y + 54),
+               unit, font=_font(12), fill=DIM)
+    for i, ln in enumerate(sub.split('\n')[:2]):
+        d.text((x + 12, y + 84 + i * 15), ln, font=_font(11), fill=(104, 126, 126))
+
+
+def render_frame(rec, scene, result, cam_info, step: int, n_steps: int,
+                 metrics: dict, scene_name: str, intent_line: str = ''
+                 ) -> Image.Image:
+    img = Image.new('RGB', (W, H), BG)
+    d = ImageDraw.Draw(img)
+
+    # --- header ------------------------------------------------------------
+    d.text((14, 9), 'E2E PIPELINE  ·  closed loop', font=_font(14, bold=True),
+           fill=TEXT)
+    d.text((250, 11), 'perception → occupancy → prediction → planning → '
+                      'safety filter → control', font=_font(11), fill=DIM)
+    head = f'{scene_name}   step {step + 1}/{n_steps}   t={rec.t:.1f}s'
+    d.text((W - 14 - d.textlength(head, font=_font(11)), 11), head,
+           font=_font(11), fill=DIM)
+
+    y = HEAD_H
+    if cam_info is not None:
+        img.paste(_render_camera(cam_info, rec, scene, result), (0, y))
+    img.paste(_render_bev(scene, result), (CAM_W, y))
+    d.line([CAM_W, y, CAM_W, y + CAM_H], fill=RULE)
+
+    # --- status strip ------------------------------------------------------
+    y += CAM_H
+    d.rectangle([0, y, W, y + STATUS_H], fill=(18, 30, 30))
     status = ('EMERGENCY BRAKE' if result.emergency
               else f'chose candidate {result.chosen_index}')
-    d.text((x0, y), f'{result.feasible_count}/{len(result.verdicts)} feasible'
-                    f'   {status}',
-           font=f, fill=(230, 90, 90) if result.emergency else FEASIBLE); y += 20
+    scol = (235, 92, 92) if result.emergency else FEASIBLE
+    parts = [(f'speed {rec.ego_v:5.2f} m/s', TEXT),
+             (f'accel {rec.accel:+5.2f} m/s²', DIM),
+             (f'steer {rec.steer:+.3f} rad', DIM),
+             (f'{result.feasible_count}/{len(result.verdicts)} candidates '
+              f'feasible', DIM),
+             (status, scol)]
+    x = 14
+    for txt, col in parts:
+        d.text((x, y + 9), txt, font=_font(12, bold=col is scol), fill=col)
+        x += int(d.textlength(txt, font=_font(12))) + 30
+    if intent_line:
+        d.text((x, y + 9), f'intent: {intent_line[:40]}', font=_font(12),
+               fill=(150, 190, 190))
 
-    for v in result.verdicts[:7]:
-        col = FEASIBLE if v.feasible else (185, 110, 110)
-        why = ','.join(v.reasons)[:30] if v.reasons else 'ok'
-        d.text((x0, y), f'  c{v.index} clr{v.min_clearance:4.1f}m  {why}',
-               font=f, fill=col); y += 15
-    y += 10
-
-    s, rt, c = metrics['safety'], metrics['route'], metrics['comfort']
-    d.text((x0, y), 'METRICS (so far)', font=fb, fill=TEXT); y += 18
+    # --- metric tiles ------------------------------------------------------
+    y += STATUS_H + 10
+    s, rt, c, lat = (metrics['safety'], metrics['route'],
+                     metrics['comfort'], metrics.get('latency', {}))
     mc = s['min_clearance_m']
-    rows = [f"collisions   {s['n_collision_steps']}",
-            f"min clear    {mc:.2f} m" if mc is not None else 'min clear    n/a',
-            f"brakes       {s['emergency_brakes']}"]
-    if rt.get('completion') is not None:
-        rows.append(f"route        {rt['completion']:.1%}")
-    if not c.get('insufficient_data'):
-        rows.append(f"jerk rms     {c['jerk_rms']:.2f} m/s^3")
-    for r in rows:
-        d.text((x0, y), r, font=f, fill=DIM); y += 16
+    tiles = [
+        ('SAFETY', str(s['n_collision_steps']), 'collisions',
+         'steps with any\nfootprint overlap',
+         FEASIBLE if s['n_collision_steps'] == 0 else (235, 92, 92)),
+        ('CLEARANCE', f'{mc:.2f}' if mc is not None else '—', 'm',
+         'closest approach\nto any agent',
+         FEASIBLE if (mc is None or mc > 0.5) else (235, 176, 92)),
+        ('ROUTE', f"{rt['completion']:.0%}" if rt.get('completion') is not None
+         else '—', '', 'of the logged\nroute covered', (110, 180, 240)),
+        ('COMFORT', f"{c['jerk_rms']:.2f}" if not c.get('insufficient_data')
+         else '—', 'm/s³', 'RMS jerk over\nthe rollout', (190, 160, 240)),
+        ('INTERVENTIONS', str(s['emergency_brakes']), 'brakes',
+         'filter rejected every\ncandidate',
+         FEASIBLE if s['emergency_brakes'] == 0 else (235, 176, 92)),
+    ]
+    if lat.get('total_ms_mean') is not None:
+        tiles.append(('LATENCY', f"{lat['total_ms_mean']:.0f}", 'ms',
+                      'per closed-loop\nstep, mean', (140, 200, 200)))
 
-    d.text((x0, PANEL - 46), 'green = feasible   dark red = rejected',
-           font=f, fill=(90, 115, 115))
-    d.text((x0, PANEL - 30), 'yellow = chosen    teal = drivable',
-           font=f, fill=(90, 115, 115))
+    gap, n = 10, len(tiles)
+    tw = (W - 28 - gap * (n - 1)) / n
+    for i, (label, value, unit, sub, col) in enumerate(tiles):
+        _tile(d, 14 + i * (tw + gap), y, tw, label, value, unit, sub, col)
     return img
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--dataroot', default='/Users/trish/Downloads/nuScenes_miniV1.0')
-    ap.add_argument('--scene', type=int, default=0)
-    ap.add_argument('--steps', type=int, default=20)
+    ap.add_argument('--dataroot',
+                    default=os.environ.get('NUSCENES_DATAROOT') or
+                    os.path.expanduser('~/Downloads/nuScenes_miniV1.0'))
+    ap.add_argument('--scene', type=int, default=5)
+    ap.add_argument('--steps', type=int, default=24)
+    ap.add_argument('--initial-speed', type=float, default=None,
+                    help='m/s; default is the logged ego speed at frame 0')
     ap.add_argument('--anchors',
                     default='diffusiondrive_planner/data/kmeans/kmeans_plan_6.npy')
     ap.add_argument('--frame-ms', type=int, default=500)
+    ap.add_argument('--width', type=int, default=1040,
+                    help='output width; the camera photo dominates GIF size')
+    ap.add_argument('--colors', type=int, default=128)
+    ap.add_argument('--no-camera', action='store_true',
+                    help='skip the camera panel (occupancy + tiles only)')
     ap.add_argument('--out', default='e2e_pipeline/assets/closed_loop.gif')
     args = ap.parse_args()
 
@@ -207,7 +377,8 @@ def main() -> None:
 
     nusc = NuScenes(version='v1.0-mini', dataroot=args.dataroot, verbose=False)
     world = GTWorldModel(nusc, scene_idx=args.scene)
-    cfg = LoopConfig(max_steps=args.steps, initial_speed=5.0)
+    v0 = world.initial_speed() if args.initial_speed is None else args.initial_speed
+    cfg = LoopConfig(max_steps=args.steps, initial_speed=v0)
 
     planner = (diffusiondrive_anchor_planner(args.anchors, cfg.dt)
                if Path(args.anchors).exists()
@@ -215,7 +386,7 @@ def main() -> None:
 
     # Re-run the loop capturing the per-step scene and filter result, which the
     # runner does not retain (records hold metrics inputs, not renderables).
-    frames, captured = [], []
+    captured = []
     orig_call = SafetyFilter.__call__
 
     def capturing(self, candidates, scene, scores=None, risk=None):
@@ -226,29 +397,34 @@ def main() -> None:
 
     SafetyFilter.__call__ = capturing
     try:
-        runner = ClosedLoopRunner(world, planner, cfg)
-        records, metrics = runner.run(command=2)
+        records, metrics = ClosedLoopRunner(world, planner, cfg).run(command=2)
     finally:
         SafetyFilter.__call__ = orig_call
 
     name = nusc.scene[args.scene]['name']
     print(f'[INFO] {name}: {len(records)} steps, {len(captured)} captured')
 
+    frames = []
     for k, rec in enumerate(records):
         if k >= len(captured):
             break
         scene, result = captured[k]
-        partial = evaluate(records[:k + 1], world.route(), cfg.dt)
-        frames.append(render_frame(rec, scene, result, '', k, len(records),
-                                   partial))
+        cam = None if args.no_camera else world.camera_at(rec.t)
+        frames.append(render_frame(rec, scene, result, cam, k, len(records),
+                                   evaluate(records[:k + 1], world.route(), cfg.dt),
+                                   name))
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    pf = [f.quantize(colors=200, method=Image.MEDIANCUT, dither=Image.NONE)
-          for f in frames]
+    if args.width and args.width < W:
+        h = int(round(H * args.width / W))
+        frames = [f.resize((args.width, h), Image.LANCZOS) for f in frames]
+    pf = [f.quantize(colors=args.colors, method=Image.MEDIANCUT,
+                     dither=Image.NONE) for f in frames]
     pf[0].save(out, save_all=True, append_images=pf[1:],
                duration=args.frame_ms, loop=0, disposal=2)
-    print(f'[DONE] {len(frames)} frames -> {out}  ({out.stat().st_size/1e6:.1f} MB)')
+    print(f'[DONE] {len(frames)} frames {frames[0].size} -> {out}  '
+          f'({out.stat().st_size / 1e6:.1f} MB)')
 
 
 if __name__ == '__main__':
