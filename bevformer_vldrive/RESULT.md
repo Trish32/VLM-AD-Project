@@ -400,6 +400,89 @@ separable; and it rewards imitation, not safety — a human who should have brak
 and did not makes PROCEED "correct". Read it as a **regression detector** ("did
 this change make agreement worse?"), not as a measure of driving quality. n=36.
 
+## Does a better detector make a better decision?
+
+Four detectors, same 81 mini_val frames, same camera, same stage-1 light state,
+same prompt, same decoding. Only the detection text changes.
+
+| detector | mAP | boxes/frame (>=0.25) | agrees with GT | agrees with human |
+|---|---|---|---|---|
+| BEVFormer-Tiny (camera) | 0.163 | 50.6 | 71.6% | 31/69 = 44.9% |
+| BEVFusion robust (LC) | 0.468 | 42.9 | 69.1% | 30/69 = 43.5% |
+| BEVFusion MIT det (LC) | 0.578 | 38.6 | 72.8% | 26/69 = 37.7% |
+| ground truth | 1.000 | 54.8 | -- | 29/69 = 42.0% |
+
+`tools/compare_detectors.py`, then `tools/compare_planning.py` for the metres.
+
+### The noise floor is zero, so every difference below is real
+
+Re-running the first arm over the same frames reproduced **81/81** decisions at
+`temperature 0.0`. This gate exists because an earlier ablation in this repo
+compared an arm against ITSELF and agreed 0/6, invalidating every conclusion
+drawn from it. Here the decoder is exactly deterministic, so arm-to-arm
+differences are genuine responses to different input, not sampling.
+
+### Detection quality does not bind the decision
+
+**mAP is uncorrelated with decision agreement.** Across a 3.5x mAP range
+(0.163 -> 0.578), agreement with the ground-truth arm moves 3.7 percentage
+points and not monotonically: BEVFusion-robust at mAP 0.468 agrees with GT
+*less* (69.1%) than BEVFormer at mAP 0.163 (71.6%). Pearson r = **+0.07**.
+
+Against the human reference, no arm is distinguishable. Spread best-to-worst is
+7.2 pp against a standard error on a difference of 8.4 pp. McNemar between
+BEVFormer and BEVFusion-MIT gives 8 discordant one way, 9 the other,
+**p = 1.000**. The best detector scores *lowest* against the human (37.7%) and
+the worst scores *highest* (44.9%), which on n=69 is noise, not an inversion --
+but it rules out the effect being large.
+
+### It is not that the detections are ignored
+
+Two controls say the VLM really is reading this channel:
+
+- The top-5 detection text differs across arms on **81/81** frames -- never once
+  identical. The class multiset matches on only 40.7%.
+- Decisions diverge on **47%** of frames without a decisive light, and those
+  divergences are worth **4.7-5.0 m** of trajectory endpoint once carried through
+  `DrivingIntent` -> DiffusionDrive anchors.
+
+So the input changes, the decision changes, and the trajectory changes by metres.
+What does *not* change is whether the decision is any **good**.
+
+### The light dominates, exactly as predicted
+
+Stage 1 reads the light from the camera with no detection text in context, so it
+is detector-invariant by construction. The prediction written before running: on
+any frame with a decisive light, all four arms must agree.
+
+| | frames | all 4 arms identical |
+|---|---|---|
+| decisive light (red/yellow) | 8 | **8/8 = 100%** |
+| no decisive light | 73 | 39/73 = 53.4% |
+
+### Agreement clusters by architecture, not by accuracy
+
+The two BEVFusion arms agree with **each other** 85.2% while agreeing with GT
+only 69.1% and 72.8%. They share a modality and therefore share failure modes.
+Accuracy does not predict who you agree with; architecture does.
+
+### What this does and does not license
+
+It supports: *on this frame set, replacing a camera-only detector with a
+LiDAR-fused one 3.5x more accurate did not measurably improve driving decisions,
+and the ceiling is not in perception.*
+
+It does not support a general claim. **n = 81 frames from 2 scenes**
+(scene-0103, scene-0916) -- the only frames where both BEVFusion ports have saved
+results -- and only 8 carry a decisive light. The reference is the human's
+realised speed, a proxy that rewards imitation over safety. And the BEV raster is
+not sent (see the harness docstring), so this measures the detection-text channel
+rather than the full shipped pipeline.
+
+The actionable read: effort on this stack is better spent on the light/reasoning
+path than on the detector. That is the same conclusion the GT ablation reached
+from the endpoints, now with the middle filled in and a determinism gate under it.
+
 ## Anchor provenance
 
 The DiffusionDrive planning panel draws from `assets/kmeans_plan_6.npy`, a
