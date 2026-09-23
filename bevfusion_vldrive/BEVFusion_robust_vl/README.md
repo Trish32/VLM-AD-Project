@@ -20,9 +20,20 @@ It sits on BACK because a forward driving decision depends on that view least.
 The VLM receives the **same four channels BEVFormer's pipeline sends** -- BEV
 raster, forward camera, map-projected traffic-light crop, and structured
 detections as text -- so the only difference between the three ports is which
-detector produced the boxes. The raster comes from BEVFormer's own
-`build_scene_canvas`, not a lookalike renderer; see
-`../make_vlm_reasoning.py`.
+detector produced the boxes. The raster is drawn from **this port's own detections** --
+its saved `results_nusc.json` -- so the picture differs between ports exactly as
+the detection text does. What is shared is only the *renderer*: BEVFormer's
+`build_scene_canvas` paints every port's boxes, so palette, scale, line width and
+map layers are held fixed and the boxes are the only thing that varies. Drawing
+each port with its own code would confound "which detector" with "which
+renderer". See `../make_vlm_reasoning.py`.
+
+Note what is *not* sent: BEVFusion's LiDAR point cloud. `bev_viz.bev_panel()`
+renders it for the GIF, but the VLM receives boxes only. Including the points
+would give the fusion arms information BEVFormer cannot have, turning "does
+better detection quality help?" into "does having LiDAR help?" -- a different
+question. The raster carries what each detector *concluded*, not everything it
+observed.
 
 Regenerate:
 
@@ -38,6 +49,34 @@ LiDAR-frame BEV — accumulated point cloud (height-shaded) with the same boxes 
 the ego at the centre, forward = up.*
 
 ---
+
+
+## This port as a study arm
+
+Both BEVFusion ports are arms in the detector-quality study in
+[`../../bevformer_vldrive/RESULT.md`](../../bevformer_vldrive/RESULT.md), which
+asks whether a better 3-D detector produces a better driving decision. Same 81
+mini_val frames, same camera, same stage-1 light state, same prompt, same
+decoding -- only the detector changes.
+
+| arm | mAP | agrees with GT decision | trajectory endpoint vs GT |
+|---|---|---|---|
+| BEVFormer-Tiny (camera-only) | 0.163 | 54.3% | 2.92 m |
+| BEVFusion robust (LC) | 0.468 | 58.0% | 2.60 m |
+| BEVFusion MIT det (LC) | 0.578 | 69.1% | 1.95 m |
+
+**This port sits in the middle: better than camera-only BEVFormer on both measures, behind the MIT port.** Both the decision agreement and the planned trajectory order by detection
+quality (Pearson r = +0.856 on mAP vs GT-agreement).
+
+The finding only appears with the **BEV raster** in the payload. An earlier run
+that sent camera + light + detection text alone measured r = +0.07 and concluded
+detector quality did not matter -- that conclusion is retracted in RESULT.md. The
+detection text is capped at 5 rows, so two detectors differing mainly in the
+other 40+ boxes produce near-identical text; the raster has no such cap. That is
+why the GIF above sends all four channels.
+
+Caveat carried from RESULT.md: McNemar gives **p = 0.050** exactly, on 81 frames
+from 2 scenes. A relationship worth taking seriously, not a settled one.
 
 ## Architecture
 
