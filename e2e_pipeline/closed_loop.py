@@ -196,7 +196,8 @@ class ClosedLoopRunner:
                 if admissible:
                     ranked = plan_with_world_model(
                         candidates, scene, model=self.latent_model,
-                        critic=self.critic, dt=cfg.dt, admissible=admissible)
+                        critic=self.critic, dt=cfg.dt, admissible=admissible,
+                        prior=scores)
                     best = ranked[0]
                     result.trajectory = np.asarray(candidates[best.index],
                                                    dtype=np.float64)

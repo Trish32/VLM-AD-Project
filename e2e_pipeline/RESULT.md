@@ -291,3 +291,59 @@ One caveat worth stating before anyone quotes L2: on nuScenes open-loop, L2 meas
 agreement with the logged human trajectory, so a genuinely safer plan can score
 *worse*. Watch it for regressions, but collision rate against occupancy is the metric
 that matches the intent.
+
+## Action-conditioned world model: implemented, measured, does not help
+
+`world_model.py` adds the plan-before-acting loop: `z_0 = encode(scene)`,
+`z_{t+1} = f(z_t, a_t)` per candidate action, rank by a critic over the rollout,
+execute the best. It is wired into the closed loop behind
+`LoopConfig.use_world_model` and **defaults to off**, because it measurably
+degrades every metric.
+
+| 10 scenes, 20 steps, logged initial speed | brakes | collisions | completion | min-clear |
+|---|---|---|---|---|
+| safety filter only | **143** | **35** | **27.6%** | **1.37 m** |
+| + rollout ranking | 149 | 39 | 26.1% | 0.92 m |
+| + rollout ranking + planner prior | 149 | 39 | 26.1% | 0.92 m |
+
+### Why it loses, structurally
+
+The safety filter already ranks its survivors by a cost folding in clearance,
+risk and curvature over the candidate. The rollout reproduces the candidate to
+**0.42 m over 46 m**, so the critic is re-deriving nearly the same quantities
+from nearly the same path, with a different and un-tuned weighting. It cannot
+add information the filter lacks; it can only reweight what the filter already
+has. Against a cost that was tuned, a reweighting that was not loses.
+
+Adding the planner's own score as a prior changed **nothing** -- the numbers are
+identical to three significant figures. Anchor scores are normalised
+probabilities (~0.167 each), so at `W_PRIOR = 3.0` they contribute ~0.5 against
+a risk spread of 1.65. Two attempts is where this stops: further weight
+adjustment would be fitting to the demo, the same trap avoided with `max_risk`.
+
+### A retraction from the first pass
+
+An earlier revision recorded "off-road reads 0.83 for candidates the filter
+passed" as a defect, on the reasoning that both could not be true. **The filter
+had not passed them.** Checking directly: `feasible 0/6, emergency=True`, every
+candidate rejected for `off-road@5steps`. The filter and the critic agree
+exactly, my own manual raster indexing matches `FreeSpace.traversable_at`, and
+the 0.83 is real -- at 15.3 m/s the anchors project 46 m forward while the GT
+corridor is a 10 m band around a curving route. I asserted a contradiction
+without running the filter to check, which is the same error as the "mAP ~= 0"
+episode: a plausible inference reported as an observation.
+
+The other first-pass finding stands: progress is constant across candidates
+(45.96 m each, since anchors are rescaled to a common target speed), so the term
+cancels in ranking while carrying an unbounded metre scale that would dominate
+the bounded terms the moment candidate lengths diverge.
+
+### What would make it worth revisiting
+
+A critic with information the filter does not have -- a learned value function,
+or agent reactivity so the rollout predicts how others respond to the ego rather
+than assuming constant velocity. With constant-velocity agents and an analytic
+critic, the rollout's extra horizon buys nothing the swept-footprint check has
+not already seen. The `WorldModel` and `SafetyCritic` Protocols exist so either
+can drop in without touching the loop.
+

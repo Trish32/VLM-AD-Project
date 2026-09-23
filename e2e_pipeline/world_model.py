@@ -61,6 +61,7 @@ W_OFFROAD = 4.0       # fraction of rollout steps outside drivable space
 W_CLEARANCE = 1.0     # reward for keeping distance
 W_COMFORT = 0.4       # |accel| and |jerk|
 W_PROGRESS = 1.0      # distance made good along the candidate
+W_PRIOR = 3.0         # the upstream planner's own score for this candidate
 
 
 @dataclass
@@ -308,13 +309,22 @@ def plan_with_world_model(candidates: np.ndarray, scene: SceneRepresentation,
                           model: WorldModel | None = None,
                           critic: SafetyCritic | None = None,
                           dt: float = 0.5,
-                          admissible: Sequence[int] | None = None
+                          admissible: Sequence[int] | None = None,
+                          prior: Sequence[float] | None = None
                           ) -> list[RankedCandidate]:
     """Roll out each candidate and rank by critic score, best first.
 
     `admissible` restricts the rollout to candidates the safety filter already
     passed. Ranking is a preference among admissible actions; it never promotes
     one the filter rejected, so the hard gate stays in front of the soft score.
+
+    `prior` is the upstream planner's own score per candidate -- the VLM's intent
+    preference, expressed through DiffusionDrive's anchor scoring. It is ADDED to
+    the critic rather than replaced by it. Omitting it was a measured mistake:
+    a critic that re-ranks on rollout terms alone throws away the intent signal
+    the whole VLA stage exists to produce, and the closed loop got worse on every
+    metric. The rollout should tell you which admissible action leads somewhere
+    better, not re-litigate which action was wanted.
     """
     model = model or KinematicWorldModel()
     critic = critic or AnalyticCritic()
@@ -326,8 +336,10 @@ def plan_with_world_model(candidates: np.ndarray, scene: SceneRepresentation,
     for i in idxs:
         acts = actions_from_trajectory(cands[i], scene.ego.speed, dt)
         states = rollout(model, z0, acts, dt)
+        sc = critic.score(states, scene)
+        if prior is not None and i < len(prior):
+            sc = replace(sc, total=sc.total + W_PRIOR * float(prior[i]))
         out.append(RankedCandidate(index=int(i), trajectory=cands[i],
-                                   score=critic.score(states, scene),
-                                   states=states))
+                                   score=sc, states=states))
     out.sort(key=lambda r: r.score.total, reverse=True)
     return out
