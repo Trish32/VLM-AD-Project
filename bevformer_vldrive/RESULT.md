@@ -402,86 +402,100 @@ this change make agreement worse?"), not as a measure of driving quality. n=36.
 
 ## Does a better detector make a better decision?
 
+Yes -- but only if you send the BEV raster. This was measured twice, and the
+first answer was wrong.
+
 Four detectors, same 81 mini_val frames, same camera, same stage-1 light state,
-same prompt, same decoding. Only the detection text changes.
+same prompt, same decoding, `temperature 0.0`. Each arm's raster is rendered from
+its OWN boxes by BEVFormer's `build_scene_canvas`.
 
-| detector | mAP | boxes/frame (>=0.25) | agrees with GT | agrees with human |
-|---|---|---|---|---|
-| BEVFormer-Tiny (camera) | 0.163 | 50.6 | 71.6% | 31/69 = 44.9% |
-| BEVFusion robust (LC) | 0.468 | 42.9 | 69.1% | 30/69 = 43.5% |
-| BEVFusion MIT det (LC) | 0.578 | 38.6 | 72.8% | 26/69 = 37.7% |
-| ground truth | 1.000 | 54.8 | -- | 29/69 = 42.0% |
+| detector | mAP | agrees with GT (4-channel) | agrees with GT (3-channel) |
+|---|---|---|---|
+| BEVFormer-Tiny (camera) | 0.163 | 54.3% | 71.6% |
+| BEVFusion robust (LC) | 0.468 | 58.0% | 69.1% |
+| BEVFusion MIT det (LC) | 0.578 | **69.1%** | 72.8% |
 
-`tools/compare_detectors.py`, then `tools/compare_planning.py` for the metres.
+|  | Pearson r | spread | McNemar (BEVFormer vs MIT) |
+|---|---|---|---|
+| 4-channel (BEV + cam + light + text) | **+0.856** | 14.8 pp | 10/22 discordant, **p = 0.050** |
+| 3-channel (cam + light + text) | +0.070 | 3.7 pp | 8/9 discordant, p = 1.000 |
 
-### The noise floor is zero, so every difference below is real
+`tools/compare_detectors.py` (`--no-bev` reproduces the 3-channel row).
 
-Re-running the first arm over the same frames reproduced **81/81** decisions at
-`temperature 0.0`. This gate exists because an earlier ablation in this repo
-compared an arm against ITSELF and agreed 0/6, invalidating every conclusion
-drawn from it. Here the decoder is exactly deterministic, so arm-to-arm
-differences are genuine responses to different input, not sampling.
+### The retraction
 
-### Detection quality does not bind the decision
+An earlier revision of this document concluded that **"mAP is uncorrelated with
+decision agreement"** and recommended spending effort on the light/reasoning path
+rather than the detector. That was measured with the BEV raster omitted, and it
+does not survive putting it back. With the full payload the relationship is
+monotonic in mAP and the effect is ~4x larger than the 3-channel spread.
 
-**mAP is uncorrelated with decision agreement.** Across a 3.5x mAP range
-(0.163 -> 0.578), agreement with the ground-truth arm moves 3.7 percentage
-points and not monotonically: BEVFusion-robust at mAP 0.468 agrees with GT
-*less* (69.1%) than BEVFormer at mAP 0.163 (71.6%). Pearson r = **+0.07**.
+The omission was not an oversight -- it was argued for at the time, on the
+grounds that re-encoding BEVFusion boxes into BEVFormer's tensor layout risked a
+silent yaw error, and that a row sweep had shown detection text dominating the
+raster. Both premises were defensible. The conclusion drawn from them was still
+wrong, because "text dominates raster **for reading a traffic light**" does not
+generalise to "raster carries no information about **detection quality**".
 
-Against the human reference, no arm is distinguishable. Spread best-to-worst is
-7.2 pp against a standard error on a difference of 8.4 pp. McNemar between
-BEVFormer and BEVFusion-MIT gives 8 discordant one way, 9 the other,
-**p = 1.000**. The best detector scores *lowest* against the human (37.7%) and
-the worst scores *highest* (44.9%), which on n=69 is noise, not an inversion --
-but it rules out the effect being large.
+### Why the raster is the channel that carries it
 
-### It is not that the detections are ignored
+The detection text is capped at `max_rows=5`. It can describe five objects, so
+two detectors differing mainly in the other 40+ boxes produce nearly identical
+text -- the 3-channel study measured the top-5 class multiset as identical on
+40.7% of frames. The raster has no such cap: every box above threshold is drawn,
+so a detector that finds more of them, or places them better, changes the picture
+in proportion to how much better it is. Cap the input at five rows and you cap
+how much detector quality can possibly reach the decision.
 
-Two controls say the VLM really is reading this channel:
+The same split shows it directly. Frames where all four arms agree, with no
+decisive light:
 
-- The top-5 detection text differs across arms on **81/81** frames -- never once
-  identical. The class multiset matches on only 40.7%.
-- Decisions diverge on **47%** of frames without a decisive light, and those
-  divergences are worth **4.7-5.0 m** of trajectory endpoint once carried through
-  `DrivingIntent` -> DiffusionDrive anchors.
+| payload | all 4 arms identical |
+|---|---|
+| 3-channel | 39/73 = 53.4% |
+| 4-channel | 17/73 = **23.3%** |
 
-So the input changes, the decision changes, and the trajectory changes by metres.
-What does *not* change is whether the decision is any **good**.
+Adding the raster more than doubles how often the arms diverge. A channel that
+carried nothing could not do that.
 
-### The light dominates, exactly as predicted
+### What did not change
 
-Stage 1 reads the light from the camera with no detection text in context, so it
-is detector-invariant by construction. The prediction written before running: on
-any frame with a decisive light, all four arms must agree.
+**The light still dominates where it is present.** Stage 1 reads it from the
+camera with no detection text in context, so it is detector-invariant by
+construction, and all four arms agreed on **8/8** decisive-light frames under
+both payloads.
 
-| | frames | all 4 arms identical |
-|---|---|---|
-| decisive light (red/yellow) | 8 | **8/8 = 100%** |
-| no decisive light | 73 | 39/73 = 53.4% |
+**The noise floor is still exactly zero.** Re-running the first arm over the same
+frames reproduced 81/81 decisions in both studies, so neither result is decoder
+sampling.
 
-### Agreement clusters by architecture, not by accuracy
+**Agreement with the human still separates nothing.** 37.7% / 43.5% / 42.0% /
+42.0% across the four arms on 69 scoreable frames -- a 5.8 pp spread against an
+~8.4 pp standard error on a difference. The human reference is an imitation
+proxy, and it is too coarse to rank detectors either way.
 
-The two BEVFusion arms agree with **each other** 85.2% while agreeing with GT
-only 69.1% and 72.8%. They share a modality and therefore share failure modes.
-Accuracy does not predict who you agree with; architecture does.
+### Cost worth knowing
 
-### What this does and does not license
+Sending the raster roughly triples wall-clock. In the 3-channel study the only
+image was the front camera, identical across arms, so arms 2-4 hit the KV cache
+almost free. Each arm now sends a different BEV image first, so every call
+re-prefills: ~50 min becomes ~2 h for 81 frames x 4 arms + replica. That is the
+same prompt-cache effect that took VLM latency 17.4 s -> 7.4 s earlier in this
+project, running in reverse, and it is inherent to the experiment being correct.
 
-It supports: *on this frame set, replacing a camera-only detector with a
-LiDAR-fused one 3.5x more accurate did not measurably improve driving decisions,
-and the ceiling is not in perception.*
+### Limits
 
-It does not support a general claim. **n = 81 frames from 2 scenes**
-(scene-0103, scene-0916) -- the only frames where both BEVFusion ports have saved
-results -- and only 8 carry a decisive light. The reference is the human's
-realised speed, a proxy that rewards imitation over safety. And the BEV raster is
-not sent (see the harness docstring), so this measures the detection-text channel
-rather than the full shipped pipeline.
+n = 81 frames from **2 scenes** (scene-0103, scene-0916) -- the only frames where
+both BEVFusion ports have saved results -- of which 8 carry a decisive light. The
+McNemar result is **p = 0.050**, which is the boundary, not a comfortable margin:
+this establishes a relationship worth taking seriously, not a settled one. The
+human reference rewards imitation over safety. Confirming this needs more scenes,
+which needs BEVFusion inference over frames neither port has evaluated yet.
 
-The actionable read: effort on this stack is better spent on the light/reasoning
-path than on the detector. That is the same conclusion the GT ablation reached
-from the endpoints, now with the middle filled in and a determinism gate under it.
+The revised actionable read: **detector quality does reach the decision, through
+the raster rather than the text** -- so the top-5 text cap is itself a design
+limit worth revisiting, and the earlier advice to deprioritise perception is
+withdrawn.
 
 ## Anchor provenance
 
