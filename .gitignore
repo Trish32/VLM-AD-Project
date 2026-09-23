@@ -105,3 +105,6 @@ Occupancy/FlashOcc/occ_outputs/occ_*.png
 
 # --- QCNet: keep only the demo GIF, not per-frame renders ---
 motionForecasting/QCNet/viz_outputs/qc_*.png
+
+# Scratch BEV payload written per-frame by make_vlm_reasoning.py
+bevfusion_vldrive/*/viz_out/_bev_payload.png

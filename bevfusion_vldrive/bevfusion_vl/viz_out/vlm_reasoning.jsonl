@@ -1,0 +1,15 @@
+{"token": "3e8750f331d7499e9b5123e9eb70f2e2", "light": "yellow", "decision": "STOP", "reasoning": "The traffic light governing the lane is yellow, which means stop even if there are no immediate hazards.", "n_det": 17}
+{"token": "3950bd41f74548429c0f7700ff3d8269", "light": "yellow", "decision": "STOP", "reasoning": "The traffic light governing the lane is yellow, which means stop even if there are no immediate hazards.", "n_det": 23}
+{"token": "c5f58c19249d4137ae063b0e9ecd8b8e", "light": "yellow", "decision": "STOP", "reasoning": "The traffic light governing the lane is yellow, which means stop even if there are no immediate hazards.", "n_det": 29}
+{"token": "700c1a25559b4433be532de3475e58a9", "light": "yellow", "decision": "STOP", "reasoning": "The traffic light governing the lane is yellow, which means stop even if there are no immediate hazards.", "n_det": 31}
+{"token": "747aa46b9a4641fe90db05d97db2acea", "light": "yellow", "decision": "STOP", "reasoning": "The traffic light governing the lane is yellow, which means stop even if there are no immediate hazards ahead.", "n_det": 30}
+{"token": "f4f86af4da3b49e79497deda5c5f223a", "light": "yellow", "decision": "STOP", "reasoning": "The traffic light governing the lane is yellow, which means stop even if there are no immediate hazards.", "n_det": 36}
+{"token": "6832e717621341568c759151b5974512", "light": "yellow", "decision": "STOP", "reasoning": "The traffic light governing the lane is yellow, which means stop even if there are no immediate hazards.", "n_det": 38}
+{"token": "c59e60042a8643e899008da2e446acca", "light": "yellow", "decision": "STOP", "reasoning": "The traffic light governing the lane is yellow, which means stop even if there are no immediate hazards.", "n_det": 33}
+{"token": "fa65a298c01f44e7a182bbf9e5fe3697", "light": "none", "decision": "STOP", "reasoning": "Pedestrians are crossing or stationary ahead and close to the vehicle.", "n_det": 38}
+{"token": "a98fba72bde9433fb882032d18aedb2e", "light": "none", "decision": "STOP", "reasoning": "Pedestrians are crossing and approaching from the right side at a moderate speed.", "n_det": 42}
+{"token": "b6b0d9f2f2e14a3aaa2c8aedeb1edb69", "light": "none", "decision": "PROCEED", "reasoning": "There are vehicles and pedestrians ahead at a safe distance.", "n_det": 39}
+{"token": "796b1988dd254f74bf2fb19ba9c5b8c6", "light": "none", "decision": "PROCEED", "reasoning": "There are vehicles ahead and to the sides with some pedestrian activity, but no immediate blocking hazard is detected.", "n_det": 37}
+{"token": "0d0700a2284e477db876c3ee1d864668", "light": "none", "decision": "SLOW_DOWN", "reasoning": "There are pedestrians and a traffic cone ahead that could pose a blocking hazard.", "n_det": 35}
+{"token": "de7593d76648450e947ba0c203dee1b0", "light": "none", "decision": "SLOW_DOWN", "reasoning": "Pedestrians are receding and there's a stationary traffic cone ahead.", "n_det": 37}
+{"token": "f753d3f87e5b40af87ff2cbf7c8e7082", "light": "none", "decision": "SLOW_DOWN", "reasoning": "A pedestrian crossing at a close distance requires caution.", "n_det": 38}

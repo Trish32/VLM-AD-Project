@@ -4,7 +4,9 @@ Mirrors the resolved YAML hierarchy. No mmcv/mmdet3d. See CLAUDE.md.
 """
 from __future__ import annotations
 
-DATAROOT = '/Users/trish/Downloads/nuScenes_miniV1.0'
+import os as _os  # noqa: E402
+DATAROOT = _os.environ.get('NUSCENES_DATAROOT') or _os.path.expanduser(
+    '~/Downloads/nuScenes_miniV1.0')
 VERSION = 'v1.0-mini'
 CKPT_DIR = '/Users/trish/VLMProjects/bevfusion_vldrive/bevfusion_vl/model/checkpoints'
 CKPT_DET = f'{CKPT_DIR}/bevfusion-det.pth'

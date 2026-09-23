@@ -94,7 +94,78 @@ def _draw_boxes_cam(img, lidar2img, boxes, labels, z_center=False):
     return img
 
 
-def camera_grid(nusc, sample_token, dataroot, boxes, labels, cell=(480, 270), z_center=False):
+_DECISION_RGB = {'PROCEED': (90, 220, 130), 'SLOW_DOWN': (245, 205, 70),
+                 'YIELD': (245, 160, 60), 'STOP': (240, 90, 90)}
+_LIGHT_RGB = {'red': (240, 90, 90), 'yellow': (245, 205, 70),
+              'green': (90, 220, 130), 'none': (150, 165, 165)}
+
+
+def _font(size):
+    from PIL import ImageFont
+    for p in ('/System/Library/Fonts/Menlo.ttc', '/System/Library/Fonts/SFNSMono.ttf'):
+        try:
+            return ImageFont.truetype(p, size)
+        except OSError:
+            pass
+    return ImageFont.load_default()
+
+
+def _wrap(text, font, width, draw, max_lines):
+    words, lines, cur = text.split(), [], ''
+    for w in words:
+        trial = f'{cur} {w}'.strip()
+        if draw.textlength(trial, font=font) <= width:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+            if len(lines) == max_lines:
+                break
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+    if len(lines) == max_lines and len(' '.join(lines)) < len(text):
+        lines[-1] = lines[-1][:-1] + '…'
+    return lines
+
+
+def vlm_overlay(cell_rgb, vlm):
+    """Draw the VLM stage over one camera cell (RGB, modified copy returned).
+
+    The BACK camera carries it because it is the tile a forward driving decision
+    depends on least -- the reasoning is about what is ahead, so covering what is
+    behind costs the least information. Drawn AFTER the cell is resized so the
+    final on-screen text size is controlled here rather than set by whatever
+    downscale the GIF encoder ends up applying.
+    """
+    from PIL import Image as _I, ImageDraw as _D
+    img = _I.fromarray(cell_rgb).convert('RGBA')
+    W, H = img.size
+    shade = _I.new('RGBA', (W, H), (8, 14, 14, 214))
+    img = _I.alpha_composite(img, shade)
+    d = _D.Draw(img)
+
+    f_hd, f_key, f_body = _font(14), _font(17), _font(13)
+    d.text((12, 10), 'VLM REASONING', font=f_hd, fill=(150, 210, 210, 255))
+    d.line([12, 30, W - 12, 30], fill=(60, 96, 96, 255))
+
+    light = (vlm.get('light') or 'none').lower()
+    dec = (vlm.get('decision') or '?').upper()
+    d.text((12, 40), 'LIGHT', font=f_body, fill=(140, 156, 156, 255))
+    d.text((72, 38), light, font=f_key,
+           fill=(*_LIGHT_RGB.get(light, (200, 200, 200)), 255))
+    d.text((12, 66), 'DECISION', font=f_body, fill=(140, 156, 156, 255))
+    d.text((100, 63), dec, font=f_key,
+           fill=(*_DECISION_RGB.get(dec, (220, 220, 220)), 255))
+
+    y = 96
+    for ln in _wrap(vlm.get('reasoning', ''), f_body, W - 24, d, max_lines=7):
+        d.text((12, y), ln, font=f_body, fill=(206, 214, 214, 255))
+        y += 17
+    return np.array(img.convert('RGB'))
+
+
+def camera_grid(nusc, sample_token, dataroot, boxes, labels, cell=(480, 270),
+                z_center=False, vlm=None):
     sample = nusc.get('sample', sample_token)
     cells = []
     for cam in CAM_GRID:
@@ -107,7 +178,10 @@ def camera_grid(nusc, sample_token, dataroot, boxes, labels, cell=(480, 270), z_
         cv2.putText(img, lab, (12, 34), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 4, cv2.LINE_AA)
         cv2.putText(img, lab, (12, 34), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (235, 235, 235), 2, cv2.LINE_AA)
         cell_img = cv2.resize(img, cell, interpolation=cv2.INTER_AREA)
-        cells.append(cv2.cvtColor(cell_img, cv2.COLOR_BGR2RGB))
+        rgb = cv2.cvtColor(cell_img, cv2.COLOR_BGR2RGB)
+        if vlm is not None and cam == 'CAM_BACK':
+            rgb = vlm_overlay(rgb, vlm)
+        cells.append(rgb)
     row0 = np.hstack(cells[:3]); row1 = np.hstack(cells[3:])
     return np.vstack([row0, row1])
 
@@ -149,11 +223,15 @@ def bev_panel(points, boxes, labels, pc_range, size):
 
 
 def composite(nusc, sample_token, dataroot, points, boxes, scores, labels,
-              pc_range, classes, title, score_thr=0.3, z_center=False):
+              pc_range, classes, title, score_thr=0.3, z_center=False, vlm=None):
     """Full frame: camera grid (top) + BEV (bottom-left) + legend.
 
     ``z_center=True`` when the detector's box z is the gravity centre (MIT
     TransFusion); leave False when z is the box bottom (robust anchor3d).
+
+    ``vlm`` is an optional {light, decision, reasoning} dict; when present it is
+    drawn over the BACK camera tile, turning the detection demo into a
+    detector -> VLM -> decision demo without changing the frame size.
     """
     import numpy as np
     boxes = np.asarray(boxes.detach().cpu() if hasattr(boxes, 'detach') else boxes)
@@ -162,7 +240,8 @@ def composite(nusc, sample_token, dataroot, points, boxes, scores, labels,
     keep = scores >= score_thr
     boxes, labels = boxes[keep], labels[keep]
 
-    grid = camera_grid(nusc, sample_token, dataroot, boxes, labels, z_center=z_center)
+    grid = camera_grid(nusc, sample_token, dataroot, boxes, labels,
+                       z_center=z_center, vlm=vlm)
     gh, gw = grid.shape[:2]
     bev = bev_panel(points, boxes, labels, pc_range, size=gh)         # gh×gh
 

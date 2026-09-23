@@ -7,6 +7,11 @@ Pure PyTorch / MPS only — no mmcv / mmdet3d. See CLAUDE.md.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+
 # ---------------------------------------------------------------------------
 # Geometry
 # ---------------------------------------------------------------------------
@@ -109,9 +114,12 @@ TRAIN_CFG = dict(
 # ---------------------------------------------------------------------------
 # Data root
 # ---------------------------------------------------------------------------
-DATAROOT = '/Users/trish/Downloads/nuScenes_miniV1.0'
+# Resolved, not hard-coded: $NUSCENES_DATAROOT wins, else the developed-against
+# layout under $HOME, else an in-repo symlink. Matches bevformer_vldrive/tools/dataroot.py.
+DATAROOT = os.environ.get('NUSCENES_DATAROOT') or os.path.expanduser(
+    '~/Downloads/nuScenes_miniV1.0')
 VERSION = 'v1.0-mini'
-CHECKPOINT = (
-    '/Users/trish/VLMProjects/bevfusion_vldrive/'
-    'BEVFusion_vl/model/checkpoints/bevf_pp_2x8_1x_nusc.pth'
-)
+# Was an absolute path naming BEVFusion_vl/ -- a directory that no longer exists
+# after this port was renamed to BEVFusion_robust_vl. Anchored to this file now,
+# so a rename can never silently break it again.
+CHECKPOINT = str(_HERE / 'model' / 'checkpoints' / 'bevf_pp_2x8_1x_nusc.pth')

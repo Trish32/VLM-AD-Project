@@ -6,6 +6,7 @@ Example:
         python visualize.py --max-frames 15 --device cpu
 """
 import argparse
+import json
 import os
 import sys
 
@@ -30,6 +31,9 @@ def main():
     ap.add_argument('--max-frames', type=int, default=15)
     ap.add_argument('--score-thr', type=float, default=0.3)
     ap.add_argument('--out', default='viz_out')
+    ap.add_argument('--vlm', default=None,
+                    help='JSONL from make_vlm_reasoning.py; overlays the '
+                         'VLM light/decision/reasoning on CAM_BACK')
     ap.add_argument('--device', default='cpu')
     args = ap.parse_args()
     print("device:", args.device)
@@ -45,6 +49,18 @@ def main():
     tokens = ld.sample_tokens(args.split)[args.start:args.start + args.max_frames]
     print(f"{len(tokens)} frames")
 
+    # Keyed by token rather than index so a short or reordered reasoning
+    # file degrades to 'no overlay on that frame' instead of captioning
+    # one frame with another frame's decision.
+    vlm_by_tok = {}
+    if args.vlm:
+        with open(args.vlm) as vf:
+            for line in vf:
+                if line.strip():
+                    r = json.loads(line)
+                    vlm_by_tok[r['token']] = r
+        print(f'[vlm] {len(vlm_by_tok)} reasoning records')
+
     os.makedirs(args.out, exist_ok=True)
     frames = []
     for i, tok in enumerate(tokens):
@@ -53,7 +69,8 @@ def main():
         comp = bev_viz.composite(nusc, tok, args.dataroot, frame['points'],
                                  boxes, scores, labels, C.DetCfg.POINT_CLOUD_RANGE,
                                  C.OBJECT_CLASSES, "BEVFusion (MIT)", args.score_thr,
-                                 z_center=True)   # TransFusion: z = gravity centre
+                                 z_center=True,   # TransFusion: z = gravity centre
+                                 vlm=vlm_by_tok.get(tok))
         frames.append(comp)
         n = int((scores >= args.score_thr).sum()) if scores.numel() else 0
         print(f"  frame {i:02d}: {n} boxes (>= {args.score_thr})")

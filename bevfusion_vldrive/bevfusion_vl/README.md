@@ -9,6 +9,25 @@ unexpected** keys.
 
 ![BEVFusion detections](viz_out/bevfusion_mit_scene.gif)
 
+The BACK camera tile carries the **VLM stage**: the traffic-light state read from
+the forward camera, the resulting driving decision, and the model's reasoning.
+It sits on BACK because a forward driving decision depends on that view least.
+
+The VLM receives the **same four channels BEVFormer's pipeline sends** -- BEV
+raster, forward camera, map-projected traffic-light crop, and structured
+detections as text -- so the only difference between the three ports is which
+detector produced the boxes. The raster comes from BEVFormer's own
+`build_scene_canvas`, not a lookalike renderer; see
+`../make_vlm_reasoning.py`.
+
+Regenerate:
+
+```bash
+python ../make_vlm_reasoning.py --results eval_out_det/results_nusc.json --out viz_out/vlm_reasoning.jsonl
+python visualize.py --vlm viz_out/vlm_reasoning.jsonl
+```
+
+
 *nuScenes-mini scene. **Left:** the 6 surround cameras with the predicted 3-D
 boxes projected on (cars red, cones/barriers yellow, pedestrians green, …).
 **Right:** the LiDAR-frame BEV — accumulated point cloud (height-shaded) with the
