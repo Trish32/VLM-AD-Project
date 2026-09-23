@@ -5,10 +5,6 @@ A faithful reimplementation of the official [QCNet](https://github.com/ZikangZho
 torch_scatter, or PyTorch Lightning** — everything runs on `torch.device("mps")`. The
 `av2` API is used only for parsing scenarios/maps.
 
-The goal is correctness reproduction against the **official pretrained `QCNet_AV2`
-checkpoint**: the 949-tensor state_dict loads with **0 missing / 0 unexpected** keys, and
-validation metrics reproduce the published AV2 numbers.
-
 ## Qualitative result
 
 ![QCNet multimodal forecast](viz_outputs/05232a32-b689-4d23-b31a-f29e41183cbb_qcnet.gif)

@@ -1,0 +1,366 @@
+DiffusionDrive — bug / blocker log
+=================================
+
+Upstream pinned:
+  main (NAVSIM) 9b52ed0  2025-12-08
+  nusc          ae54fd8  2025-01-20
+Local patches:  patches/0001-local-import-flash_attn-and-dfa-fallback.patch
+Env:            uniad2.0 (py3.9, torch 1.12.1, mmcv 1.6.1, mmdet 2.26.0, mmdet3d 1.0.0rc6)
+
+
+[2026-08-16] BLOCKER 1 — unguarded flash_attn import broke every local import
+-----------------------------------------------------------------------------
+Fingerprint: `import projects.mmdet3d_plugin.models.sparsedrive` ->
+             ModuleNotFoundError: No module named 'flash_attn'
+
+Cause: projects/mmdet3d_plugin/models/attention.py wrapped only the FIRST flash_attn
+import in try/except, and even that except-branch imports from flash_attn again. Line 24
+(`from flash_attn.bert_padding import ...`) was fully unguarded at module scope.
+flash_attn is CUDA-compile-only, so nothing in the plugin could be imported on Mac.
+
+Fix: guard all three imports; set names to None and FLASH_ATTN_AVAILABLE=False on
+ImportError. FlashAttention.forward raises a clear RuntimeError if actually reached.
+Deliberately NOT stubbed with a CPU fallback — a zeros-returning stub passes shape
+tests and silently corrupts results. All flash_attn use is confined to forward()
+(lines 76-91), so guarding the use site is sufficient.
+
+Result: attention.py, blocks.py, sparsedrive.py, sparsedrive_head.py import on Mac.
+
+
+[2026-08-16] BLOCKER 2 — deformable_aggregation_ext (custom CUDA kernel)
+------------------------------------------------------------------------
+Fingerprint: ModuleNotFoundError: No module named 'deformable_aggregation_ext'
+
+Cause: SparseDrive's Deformable Aggregation is a hand-written CUDA kernel
+(ops/src/deformable_aggregation_cuda.cu). Cannot build on Apple Silicon.
+
+Fix: diffusiondrive_planner/dfa_torch.py — pure-PyTorch equivalent, wired in via
+ops/__init__.py when HAS_DFA_EXT is False. Calls the torch version directly rather
+than upstream's autograd.Function (whose backward also lives in the extension), and
+lets autograd differentiate through grid_sample.
+
+Kernel semantics recovered by reading the .cu (all four were load-bearing):
+  1. Thread index decomposes [batch, anchor, pts, cam, scale, embed], embed fastest;
+     output accumulates over (pts, cam, scale) via atomicAdd.
+  2. sampling_location has NO scale axis (same loc reused at every scale) and is
+     stored (w, h) — NOT (h, w).
+  3. Points are DROPPED, not clamped: `if (loc_w <= 0 || loc_w >= 1) return;`.
+     Strict inequality — a point exactly on the border contributes nothing.
+  4. Groups are CONTIGUOUS channel blocks: group = channel // (num_embeds//num_groups).
+     => repeat_interleave, not repeat. Using repeat keeps every shape valid while
+     scrambling which weight hits which channel.
+  5. `h_im = loc_h*H - 0.5` is exactly grid_sample(align_corners=False) under
+     grid = 2*loc - 1; the kernel's per-corner bounds checks are padding_mode='zeros'.
+
+Verification: tests/test_dfa_torch.py diffs the vectorized grid_sample version against
+`dfa_naive`, an independent literal transcription of the kernel (explicit floor,
+explicit corner bounds checks). The two share no code and reason in different spaces
+(normalized [-1,1] vs raw pixel offsets), so a wrong mapping makes them disagree.
+Agreement to 1e-10 in float64 across 3 seeds incl. border/outside/exactly-0/exactly-1.
+8 passed, 1 skipped.
+
+VERIFIED against the real CUDA kernel 2026-08-16 on a Kaggle Tesla T4 (torch 2.10.0+cu128)
+via tools/validate_dfa_cuda.py — a self-contained bundle JIT-built with
+cpp_extension.load, no GCP credits spent:
+
+  case                     max abs diff   max rel diff   verdict
+  tiny seed=0                 9.537e-07      4.966e-06   PASS
+  tiny seed=1                 7.153e-07      1.729e-05   PASS
+  tiny seed=2                 9.537e-07      2.807e-06   PASS
+  realistic 900x13x256        4.578e-05      1.246e-01   PASS
+
+All within float32 tolerance on ABSOLUTE error, including the realistic shape regime the
+model actually runs in.
+
+The realistic case's large max RELATIVE error (12.5% on run 1, 36.4% on run 2) was checked
+with a diagnose() pass and is CONFIRMED HARMLESS — accumulation order, not structure:
+
+  realistic 900x13x256:
+    worst-rel element |want| = 7.033e-06   (err 2.563e-06)
+    median |want|            = 7.816e+00   -> the culprit is ~6 orders below typical
+    max rel on |want|>median = 2.125e-06   <- pure float32 rounding
+    frac of elements rel>1%  = 0.00%       (0 of 230,400)
+
+Cause: the CUDA kernel accumulates via atomicAdd in NONDETERMINISTIC order across
+cam x scale x pts; the torch version sums in fixed loop order, so float32 rounding differs.
+That inflates the RATIO only where the true value is ~0.
+
+Independent corroboration: max rel error CHANGED between two runs (0.125 -> 0.364) while
+every absolute figure stayed identical — exactly what nondeterministic atomicAdd predicts,
+and impossible for a structural mismatch, which would be deterministic.
+
+LESSON: on a reduction validated against a CUDA kernel, judge by ABSOLUTE error plus
+relative error restricted to elements above the median magnitude. Raw max-relative error is
+meaningless near zero and will scare you off a correct implementation.
+
+Portability fix the bundle must apply: upstream's .cu includes <THC/THCAtomics.cuh>,
+removed in torch 1.11. The generator rewrites it to <ATen/cuda/Atomic.cuh>, without which
+it will not compile on any modern Colab/Kaggle image.
+
+
+[2026-08-16] BLOCKER 3 — diffusers / huggingface_hub incompatibility
+---------------------------------------------------------------------
+Fingerprint: ImportError: cannot import name 'cached_download' from 'huggingface_hub'
+
+Cause: motion_planning_head_v13.py and diff_motion_blocks.py need
+`from diffusers.schedulers import DDIMScheduler`. diffusers 0.27.2 calls
+huggingface_hub.cached_download, removed in huggingface_hub >= 0.26.
+
+Fix: pip install diffusers==0.27.2 huggingface_hub==0.25.2 into uniad2.0.
+(Environment pin, not a code patch.)
+
+Result: 7/7 plugin modules import, including the truncated-diffusion planner head.
+
+
+[2026-08-16] BUG 4 — DDIM clip_sample ordering (found by diffing vs diffusers)
+------------------------------------------------------------------------------
+Fingerprint: our TruncatedDDIM.step matched diffusers at t=0 but diverged for all t>0.
+Max abs diff ~1.9 on random inputs — far too large for precision.
+
+Two distinct causes, found in order:
+
+(a) alphas_cumprod built in float64 then cast; diffusers builds it in float32.
+    Symptom: ~2e-6 disagreement everywhere. Fix: build betas in float32 too.
+    LESSON: match the reference's precision, not the mathematically better one.
+
+(b) THE REAL BUG. diffusers' DDIMScheduler.step derives pred_epsilon from the
+    UNCLIPPED pred_original_sample, and only clips x0 AFTERWARDS:
+        pred_original_sample = model_output
+        pred_epsilon = (sample - a**0.5 * pred_original_sample) / b**0.5
+        ... elif clip_sample: pred_original_sample = clamp(...)
+    We clipped first, then derived epsilon. Clipping first is the natural reading.
+    (use_clipped_model_output defaults False, so epsilon is never recomputed.)
+
+Also note clip_sample=True / clip_sample_range=1.0 are diffusers DEFAULTS that upstream
+never overrides — invisible at the call site. Nearly a no-op in upstream's pipeline
+because they normalize x_start into [-1,1] first, which is exactly why it would have
+survived unnoticed into the checkpoint comparison.
+
+Result: 21/21 tests pass, exact agreement with DDIMScheduler on add_noise, step, and
+the full 2-step inference loop.
+
+
+[2026-08-16] FINDING 5 — upstream's shipped kmeans_plan.py emits the WRONG shape
+--------------------------------------------------------------------------------
+Found by regenerating the anchors instead of downloading upstream's artifact.
+
+tools/kmeans/kmeans_plan.py as shipped clusters ALL commands pooled and writes
+  cluster.reshape(-1, 6, 2)  ->  (K, 6, 2)  ->  data/kmeans/kmeans_plan_vocab_K.npy
+
+But the v13 head needs (3, K, 6, 2):
+  config:  plan_anchor = f'data/kmeans/kmeans_plan_{ego_fut_mode}.npy'   (no "vocab")
+  head:    self.plan_anchor[None].tile(bs,1,1,1,1)  -> 5-D
+           plan_anchor[bs_indices, cmd]             -> (bs, 6, 6, 2)
+
+The per-command path IS in the file but COMMENTED OUT:
+  # navi_trajs = [[], [], []] ... for trajs in navi_trajs ... clusters.append(cluster)
+  # clusters = np.stack(clusters, axis=0)
+So the released script does not reproduce the released artifact. tools/gen_plan_anchors.py
+restores the per-command path (--mode per_command) and can also reproduce the shipped
+vocab variant (--mode vocab) for comparison.
+
+Command order is [right, left, straight] per nuscenes_converter.py:386-392
+  ego_fut_trajs[-1][0] >= 2  -> [1,0,0] Right
+  ego_fut_trajs[-1][0] <= -2 -> [0,1,0] Left
+  else                       -> [0,0,1] Straight
+
+
+[2026-08-16] FINDING 6 — planning frame is x=LATERAL (right +), y=FORWARD
+-------------------------------------------------------------------------
+Not stated anywhere; inferred from the command rule keying on index 0 with a +-2m
+threshold, and confirmed empirically on mini: mean |x_final| 0.99m vs |y_final| 16.55m,
+y>0 in 90.4% of samples. gen_plan_anchors.py ASSERTS this rather than assuming it — a
+swapped axis rotates every anchor 90 deg while keeping all shapes valid.
+
+Corroboration: the head's normalization constants are tight against real data.
+Regenerated mini anchors give delta ranges x=[-3.05, 2.07] vs the x/3 clamp at +-3.0,
+and y=[0.03, 7.33] vs the (y+0.5)/8.1 range of [-0.5, 7.6]. Both axes JUST fit, which
+only happens if the frame and units are interpreted correctly. (1/216 components clipped
+by 0.053m — acceptable, and reported by the tool.)
+
+Also note: the .npy stores ABSOLUTE waypoints (kmeans_plan.py clusters .cumsum(-2)),
+while the head normalizes DELTAS. Endpoints reaching 40m are fine; a single 0.5s delta
+above 7.6m would be silently clipped.
+
+
+[2026-08-16] CAVEAT — mini anchors are NOT trainable-quality
+-------------------------------------------------------------
+nuScenes mini: 10 scenes / 404 samples -> 344 with a complete 3s future, split
+right 22 / left 30 / straight 292. Upstream clustered full trainval (~28k). k=6 on 22
+right-turn samples is weak. These anchors are for pipeline validation ONLY.
+
+Mitigating factor: self.plan_anchor is an nn.Parameter(requires_grad=False), so it IS
+in the state_dict and the OFFICIAL CHECKPOINT OVERWRITES IT. For stage-1 checkpoint
+reproduction the regenerated anchors only need the right SHAPE; values are replaced.
+They matter only for training from scratch / fine-tuning.
+=> VERIFY on load that the ckpt actually contains a `plan_anchor` key.
+
+
+[2026-08-17] DETECTOR CONNECTED — upstream SparseDrive runs on nuScenes mini, CPU
+--------------------------------------------------------------------------------
+tools/run_detector.py builds the real stage-2 model, loads the official ckpt, runs val
+samples and captures exactly what the planner head is handed. Five blockers cleared:
+
+1. DATA PREP. tools/data_converter/nuscenes_converter.py works on v1.0-mini (needs
+   --canbus <root>/can_bus, which mini ships). Produced data/infos/mini/*.pkl:
+   323 train / 81 val — 81 matches the SparseDrive port's mini_val planning count.
+
+2. SHAPELY 2.x. nuscmap_extractor._union_ped did `index_by_id[id(o)]` over
+   `STRtree.query(...)`. shapely 1.x returned GEOMETRIES; shapely 2.x (2.0.7 here)
+   returns an ARRAY OF INT INDICES -> KeyError. Patched to accept both.
+
+3. MISSING kmeans .npy. InstanceBank/heads need data/kmeans/kmeans_{det_900,map_100,
+   motion_6,plan_6}.npy at CONSTRUCTION. All four are nn.Parameters in the ckpt, so we
+   EXTRACT them from the checkpoint itself -> guaranteed right shape AND right values,
+   no data prep. (ckpt: det (900,11), map (100,40), motion (10,6,12,2), plan (3,6,6,2).)
+
+4. UPSTREAM PACKAGING BUG. The shipped stage-2 config sets refine_layer type=
+   'V11MotionPlanningRefinementModule', but models/motion/__init__.py never imports
+   motion_blocks_v11, so it never registers ->
+   'V11MotionPlanningRefinementModule is not in the plugin layer registry'.
+   The released config cannot build with the released package. Patched the __init__.
+
+5. torch 1.12 GAPS (again): `register_forward_pre_hook(with_kwargs=True)` is torch>=2.0
+   -> wrapped the bound method instead. And the CPU path needs manual DataContainer
+   unwrapping, since MMDataParallel.scatter requires CUDA.
+
+Attention substitution: re-registered our MultiheadAttentionCompat in mmcv's ATTENTION
+registry under the name 'MultiheadFlashAttention' with force=True. MUST happen AFTER the
+plugin import (upstream registers without force, so overriding first kills the import).
+The whole model — det + map + motion heads — then runs on CPU with no flash_attn, and the
+official checkpoint still loads.
+
+RESULT: sample 0 captured, 90.5 MB. Planner head receives:
+  det_output   {instance_feature, anchor_embed, classification, prediction, quality, id}
+  map_output   {instance_feature, anchor_embed, ...}
+  feature_maps [(1, 89760, 256), (6,4,2), (6,4)]   # 6 cams x 4 FPN levels, 704x256 in
+  metas        {projection_mat, image_wh, gt_ego_fut_cmd, gt_ego_fut_trajs, img_metas}
+So DFA (dfa_torch) and our attention are both exercised on real multi-view features.
+
+
+[2026-08-17] WIRING CONFIRMED — bit-identical to upstream on real data
+-----------------------------------------------------------------------
+tools/compare_planner.py wraps every diff_layers[i].forward and diff_graph_model on the
+REAL upstream head, records inputs/outputs while it processes a real nuScenes mini
+sample, then runs OUR DiffPlanner._run_block from the identical captured starting state.
+
+  quantity        max abs diff   verdict
+  plan_reg          0.000e+00    MATCH
+  plan_cls          0.000e+00    MATCH
+
+EXACT zero, not a tolerance. Real detector features, official checkpoint weights, all 22
+operation slots. This validates the WIRING — slot order, what each op is handed, and the
+prediction feedback between slots — which the per-component tests could not see.
+
+Trace also independently confirms: 22 slots in the expected order; agent_cross_gnn runs
+at 512 dims (decoupled) while self_attn / anchor_cross_gnn stay at 256; 51 agent tokens.
+
+SCOPE, stated honestly: this compares the deterministic BLOCK. The outer denoising loop
+(anchor seeding at t=8, 2 steps at [20,0], scheduler.step) is deliberately excluded —
+it draws random noise, so a direct A/B would compare different samples. Diffing from a
+captured starting state isolates wiring from sampling. The outer loop's pieces are
+validated separately: TruncatedDDIM matches diffusers' DDIMScheduler to 1e-6 on
+add_noise / step / the full 2-step loop.
+
+
+[2026-08-17] METRIC REPRODUCED — mini_val (81 samples), CPU
+------------------------------------------------------------
+tools/eval_planning.py, scored with upstream's own PlanningMetric (not a reimplementation).
+
+  metric              1.0s     2.0s     3.0s      avg
+  L2 (ours, mini)   0.2433   0.5490   0.9603   0.5842
+  L2 (paper, full)    0.27     0.54     0.90     0.57
+  col (ours, mini)  0.000%   0.000%   0.483%   0.161%
+  col (paper, full)  0.03%    0.05%    0.16%    0.08%
+
+L2 avg 0.5842 vs 0.57 published = within 2.5%, on ~10x fewer samples. 2s is nearly exact.
+Collision 0.161% vs 0.08% is NOT meaningful at this sample size — the entire figure comes
+from ONE event in the 3s bucket; one collision is worth ~0.5pp on 81 samples. L2 is the
+signal, collision is noise here.
+
+WHAT THIS RUN VALIDATES: upstream's model with TWO of our components substituted
+everywhere — dfa_torch (every deformable aggregation in det/map/motion heads) and
+MultiheadAttentionCompat (every attention). Both exercised on the real metric end to end.
+This is the final confirmation of the DFA port, on top of the T4 kernel diff.
+
+WHAT IT DOES NOT: this run used upstream's diffusion_scheduler and upstream's loop. Our
+_run_block is separately proven bit-identical (compare_planner.py), and our TruncatedDDIM
+is diffed against diffusers to 1e-6 — but a `--scheduler ours` run is what confirms the
+outer loop in situ.
+
+Setup notes for re-running: dataset.evaluate(results, eval_mode) needs eval_mode
+positionally; set dataset.work_dir; eval_config drives a SECOND dataset build inside
+planning_eval so its data paths need the same mini overrides. Samples with an incomplete
+GT future are skipped by planning_eval (`if not sdc_planning_mask.all(): continue`).
+
+
+STATUS
+------
+Local import + unit tests: DONE. Whole nusc plugin imports on Mac; DFA validated
+against a kernel transcription. Run with PYTORCH_ENABLE_MPS_FALLBACK=1 — torch 1.12
+has no MPS grid_sampler_2d.
+
+NEXT: read motion_planning_head_v13.py against our SparseDrive port
+(~/VLMProjects/sparse4d_vldrive/sparse4d_vl/model/motion_planning.py) and write down
+every structural delta — anchor count, denoising step count, noise schedule,
+conditioning. Then load the official nusc checkpoint 0/0.
+
+
+[2026-09-11] DEMO VIDEO RENDERER — four frame/format traps
+-----------------------------------------------------------
+tools/make_demo_video.py renders the mini_val cache (no model re-run) into a video in the
+shape of upstream's final_github.mp4. Four things had to be pinned down first; each was
+found by checking against data rather than by reading, and each would have produced a
+plausible-looking but wrong video.
+
+1. THE PLAN FRAME IS x=RIGHT, y=FORWARD — and BOTH conventions appear in one sample.
+   Probed by projecting unit axes through `lidar2img`: (0,10,0) lands at u=841 in
+   CAM_FRONT (image is 1600 wide, so dead centre) and (0,-10,0) lands in CAM_BACK.
+   So index 1 is forward, index 0 is lateral, +x to the right. `_render_sdc_car`'s
+   `extent=(-1,1,-2,2)` independently agrees: the ego is 2 m wide in x, 4 m long in y.
+
+2. `result['planning']` and `final_planning` ARE ABSOLUTE WAYPOINTS, but
+   `gt_ego_fut_trajs` ARE PER-STEP DELTAS.
+   The head cumsums before it stores, so `planning[cmd, best] == final_planning` exactly.
+   Upstream's own `draw_planning_pred` prepends the origin WITHOUT a cumsum, while
+   `draw_planning_gt` cumsums — the asymmetry is real, not a bug in their code. Applying
+   cumsum to the prediction (the natural reading, and what the commented-out code in
+   cam_render.py does) turns a 12 m plan into a 42 m one and still looks like a
+   trajectory.
+
+3. GROUND PLANE: use the EXTRINSICS, not the detections.  <-- cost a real debug cycle
+   First cut estimated it as median(box_z - h/2) over confident detections. On
+   scene-0916 that gives -1.72 and the re-projected corridor lands on the road; on
+   scene-0103 frame 15 it gives -2.28 and the corridor projects to v=959..1926 on a
+   900-px-tall image, i.e. entirely below the frame. It rendered as "the overlay is
+   missing" with no error.
+   Cause: box-bottom spread inside ONE frame is over 2 m (p25 -2.10, p75 -1.33 across
+   mini_val), so the median is not a ground estimate at all.
+   Fix: `lidar2ego_translation[2]` = 1.84019. nuScenes puts the ego frame origin on the
+   ground at the rear-axle midpoint, so the LiDAR z offset IS its height above the road.
+   Cross-check: GT box bottoms have median -1.626 across all 81 samples, ~21 cm above
+   -1.840, which is what real terrain plus box-fitting slack should look like.
+
+4. L2 IS THE MEAN OVER THE HORIZON, NOT THE ENDPOINT ERROR.
+   The on-screen metric first showed |plan[-1] - gt[-1]|, which reads 2.04 m on mini_val
+   against a published 0.96 m at 3 s. Both numbers are "L2 at 3s" in plain English.
+   Upstream's PlanningMetric averages the per-step displacement over every 0.5 s step up
+   to the horizon. Recomputing that way reproduces the eval run exactly:
+     ours 0.2434 / 0.5492 / 0.9604  vs  eval_planning.py 0.2433 / 0.5490 / 0.9603.
+   Also kept upstream's sample gate (`if not sdc_planning_mask.all(): continue`), so the
+   last keyframes of a scene are left unscored rather than scored on a short horizon —
+   scoring them shifted 1s/2s to 0.1446/0.3202 on scene-0916, i.e. a different metric.
+
+   Per-scene, with the correct definition:
+     scene-0916  L2  0.145 / 0.323 / 0.560 m   (n=35)   parking lot, both turns
+     scene-0103  L2  0.343 / 0.780 / 1.371 m   (n=34)   decelerates to ~1.8 m/s
+     mini_val    L2  0.243 / 0.549 / 0.960 m   (n=69)
+   scene-0103 carries nearly all the error: the planner under-predicts the hard brake
+   for the turning car, which the L2 trace in the video shows as a spike to ~4 m.
+
+NOT A BUG, documented in tests/test_demo_control.py: pure-pursuit curvature reads 3.3-3.7%
+high on a constant-curvature arc, consistently across radii 12-100 m. A plan is 6
+waypoints 0.5 s apart and linear interpolation between them puts the lookahead point on a
+chord, which for a convex path lies further off the centreline than the arc. A real
+controller reading these waypoints sees the same bias, so the test asserts its magnitude
+and sign instead of tuning it away.

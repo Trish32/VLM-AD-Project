@@ -1,0 +1,157 @@
+diff --git a/projects/mmdet3d_plugin/datasets/map_utils/nuscmap_extractor.py b/projects/mmdet3d_plugin/datasets/map_utils/nuscmap_extractor.py
+index a3792d4..c6aafe7 100644
+--- a/projects/mmdet3d_plugin/datasets/map_utils/nuscmap_extractor.py
++++ b/projects/mmdet3d_plugin/datasets/map_utils/nuscmap_extractor.py
+@@ -67,7 +67,16 @@ class NuscMapExtractor(object):
+             final_pgeom.append(pgeom)
+ 
+             for o in tree.query(pgeom):
+-                o_idx = index_by_id[id(o)]
++                # VLAProjects patch: shapely 2.x changed STRtree.query to return an
++                # array of integer INDICES; shapely 1.x returned the geometries
++                # themselves. Upstream assumes 1.x and looks the result up by object
++                # identity, which raises KeyError on shapely 2 (installed here: 2.0.7).
++                # Support both rather than pinning shapely back.
++                if isinstance(o, (int, np.integer)):
++                    o_idx = int(o)
++                    o = ped_geoms[o_idx]
++                else:
++                    o_idx = index_by_id[id(o)]
+                 if o_idx not in remain_idx:
+                     continue
+ 
+diff --git a/projects/mmdet3d_plugin/models/attention.py b/projects/mmdet3d_plugin/models/attention.py
+index 121f15b..cf4ff7d 100644
+--- a/projects/mmdet3d_plugin/models/attention.py
++++ b/projects/mmdet3d_plugin/models/attention.py
+@@ -15,13 +15,35 @@ import torch.utils.checkpoint as cp
+ 
+ 
+ from einops import rearrange
++
++# VLAProjects patch: make flash_attn optional so this module imports on machines
++# without CUDA (Mac dev). flash_attn is a CUDA-compile-only package; upstream imported
++# it unconditionally at module scope, which made the whole mmdet3d plugin unimportable
++# locally and blocked every local unit test.
++#
++# Deliberately NOT stubbed with a CPU fallback: a stub that returns zeros would pass
++# shape tests and silently corrupt results. FlashAttention.forward raises instead, so
++# anything that actually needs the kernel fails loudly and only on the CPU-only box.
++FLASH_ATTN_AVAILABLE = True
++_FLASH_ATTN_IMPORT_ERROR = None
+ try:
+-    from flash_attn.flash_attn_interface import flash_attn_unpadded_kvpacked_func
+-    print('Use flash_attn_unpadded_kvpacked_func')
+-except:
+-    from flash_attn.flash_attn_interface import  flash_attn_varlen_kvpacked_func as flash_attn_unpadded_kvpacked_func
+-    print('Use flash_attn_varlen_kvpacked_func')
+-from flash_attn.bert_padding import unpad_input, pad_input, index_first_axis
++    try:
++        from flash_attn.flash_attn_interface import flash_attn_unpadded_kvpacked_func
++    except ImportError:
++        from flash_attn.flash_attn_interface import (
++            flash_attn_varlen_kvpacked_func as flash_attn_unpadded_kvpacked_func,
++        )
++    from flash_attn.bert_padding import unpad_input, pad_input, index_first_axis
++except ImportError as exc:  # no CUDA / no flash_attn — expected on Mac
++    FLASH_ATTN_AVAILABLE = False
++    _FLASH_ATTN_IMPORT_ERROR = exc
++    flash_attn_unpadded_kvpacked_func = None
++    unpad_input = pad_input = index_first_axis = None
++    warnings.warn(
++        f"flash_attn unavailable ({exc}); FlashAttention will raise if used. "
++        "Expected on CPU/MPS dev machines.",
++        stacklevel=2,
++    )
+ 
+ 
+ def _in_projection_packed(q, k, v, w, b = None):
+@@ -60,6 +82,13 @@ class FlashAttention(nn.Module):
+             kv: The tensor containing the key, and value. (B, S, 2, H, D) 
+             key_padding_mask: a bool tensor of shape (B, S)
+         """
++        if not FLASH_ATTN_AVAILABLE:  # VLAProjects patch: fail loudly, never silently
++            raise RuntimeError(
++                "FlashAttention.forward requires the flash_attn package, which is not "
++                f"installed here ({_FLASH_ATTN_IMPORT_ERROR}). flash_attn is CUDA-only; "
++                "run this path on the GPU host. Local tests must exercise modules that "
++                "do not reach this kernel."
++            )
+         assert q.dtype in [torch.float16, torch.bfloat16] and kv.dtype in [torch.float16, torch.bfloat16]
+         assert q.is_cuda and kv.is_cuda
+         assert q.shape[0] == kv.shape[0] and q.shape[-2] == kv.shape[-2] and q.shape[-1] == kv.shape[-1]
+diff --git a/projects/mmdet3d_plugin/models/motion/__init__.py b/projects/mmdet3d_plugin/models/motion/__init__.py
+index 3d34655..9fdcccd 100644
+--- a/projects/mmdet3d_plugin/models/motion/__init__.py
++++ b/projects/mmdet3d_plugin/models/motion/__init__.py
+@@ -7,6 +7,12 @@ from .decoder import SparseBox3DMotionDecoder, HierarchicalPlanningDecoder, V1Hi
+ from .diff_motion_blocks import (DiffMotionPlanningRefinementModule, V1DiffMotionPlanningRefinementModule, TrajPooler,
+                                 V2DiffMotionPlanningRefinementModule,V1TrajPooler, V0P1DiffMotionPlanningRefinementModule)
+ 
++# VLAProjects patch: the shipped stage-2 config sets refine_layer type=
++# 'V11MotionPlanningRefinementModule', but this __init__ never imported the module that
++# defines it, so it was never registered and model construction failed with
++# 'V11MotionPlanningRefinementModule is not in the plugin layer registry'.
++from .motion_blocks_v11 import V11MotionPlanningRefinementModule
++
+ # multi-modal based on v12(v12 is single modal)
+ from .diff_motion_blocks import V4DiffMotionPlanningRefinementModule, V1ModulationLayer
+ from .motion_planning_head_v13 import V13MotionPlanningHead
+diff --git a/projects/mmdet3d_plugin/ops/__init__.py b/projects/mmdet3d_plugin/ops/__init__.py
+index cf23848..e63e2cc 100644
+--- a/projects/mmdet3d_plugin/ops/__init__.py
++++ b/projects/mmdet3d_plugin/ops/__init__.py
+@@ -1,6 +1,6 @@
+ import torch
+ 
+-from .deformable_aggregation import DeformableAggregationFunction
++from .deformable_aggregation import HAS_DFA_EXT, DeformableAggregationFunction
+ 
+ 
+ def deformable_aggregation_function(
+@@ -10,6 +10,19 @@ def deformable_aggregation_function(
+     sampling_location,
+     weights,
+ ):
++    # VLAProjects patch: without the CUDA extension, call the pure-PyTorch equivalent
++    # directly and let autograd differentiate through grid_sample, rather than going
++    # through upstream's custom Function (whose backward is also in the extension).
++    if not HAS_DFA_EXT:
++        from diffusiondrive_planner.dfa_torch import deformable_aggregation_torch
++
++        return deformable_aggregation_torch(
++            feature_maps,
++            spatial_shape,
++            scale_start_index,
++            sampling_location,
++            weights,
++        )
+     return DeformableAggregationFunction.apply(
+         feature_maps,
+         spatial_shape,
+diff --git a/projects/mmdet3d_plugin/ops/deformable_aggregation.py b/projects/mmdet3d_plugin/ops/deformable_aggregation.py
+index fd0767e..112081a 100644
+--- a/projects/mmdet3d_plugin/ops/deformable_aggregation.py
++++ b/projects/mmdet3d_plugin/ops/deformable_aggregation.py
+@@ -1,10 +1,19 @@
+ import torch
+ from torch.autograd.function import Function, once_differentiable
+ 
++# VLAProjects patch: fall back to a pure-PyTorch DFA when the CUDA extension is absent
++# (Mac dev). The fallback is a numerically-equivalent reimplementation derived from
++# ops/src/deformable_aggregation_cuda.cu, not a zero-returning stub — see
++# diffusiondrive_planner/dfa_torch.py and tests/test_dfa_matches_cuda.py.
++HAS_DFA_EXT = True
+ try:
+-    from . import deformable_aggregation_ext
++    try:
++        from . import deformable_aggregation_ext
++    except ImportError:
++        import deformable_aggregation_ext
+ except ImportError:
+-    import deformable_aggregation_ext
++    HAS_DFA_EXT = False
++    deformable_aggregation_ext = None
+ 
+ 
+ class DeformableAggregationFunction(Function):

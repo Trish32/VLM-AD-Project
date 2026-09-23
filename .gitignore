@@ -17,7 +17,13 @@ sparse4d_vldrive/sparse4d_outputs/
 diffusiondrive_planner/upstream/
 diffusiondrive_planner/upstream-nusc/
 # Generated working data (regenerable; demo media lives in assets/)
-diffusiondrive_planner/data/
+diffusiondrive_planner/data/*
+# ...except the k-means plan anchors: 1.4 KB, and they are the planner's
+# vocabulary -- without them e2e_pipeline silently falls back to constant
+# velocity while the README advertises DiffusionDrive candidates.
+!diffusiondrive_planner/data/kmeans/
+diffusiondrive_planner/data/kmeans/*
+!diffusiondrive_planner/data/kmeans/*.npy
 diffusiondrive_planner/checkpoints/
 
 # --- Python ---
