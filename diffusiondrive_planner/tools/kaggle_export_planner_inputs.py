@@ -18,13 +18,69 @@ import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------- CONFIG ----
-CKPT = '/kaggle/input/diffusiondrive-stage2/diffusiondrive_nusc_stage2.pth'
-NUSC = '/kaggle/input/nuscenes-mini/v1.0-mini'          # dir holding v1.0-mini/
+# Discovered at runtime, not hardcoded. Kaggle mounts datasets under
+# /kaggle/input/datasets/<owner>/<slug>/ now, not the classic /kaggle/input/<slug>/
+# -- a v1 run failed on exactly that assumption. Searching for the artefacts
+# themselves survives any further layout change.
+CKPT_NAME = 'diffusiondrive_nusc_stage2.pth'
+CKPT = ''      # resolved by preflight()
+NUSC = ''      # resolved by preflight()
 OUT = '/kaggle/working/planner_inputs_plain.pt'
 N_SAMPLES = 81                                          # mini_val; 0 = all
 UPSTREAM = 'https://github.com/hustvl/DiffusionDrive'
 CONFIG_REL = 'projects/configs/diffusiondrive_configs/diffusiondrive_small_stage2.py'
 # -----------------------------------------------------------------------------
+
+
+def preflight():
+    """Fail in the first seconds, not after the model loads.
+
+    A GPU session is a scarce resource and the failure this guards against is
+    silent-until-late: the config resolves paths lazily, so a dataset missing
+    its v1.0-mini/ metadata produces a confusing error deep inside dataset
+    construction rather than an obvious one up front. The public nuScenes mirror
+    was verified to carry samples/CAM_* but its metadata directory was not
+    confirmed, so this checks rather than assumes.
+    """
+    global CKPT, NUSC
+    root = Path('/kaggle/input')
+    if not root.exists():
+        raise SystemExit('[preflight] /kaggle/input does not exist -- not on Kaggle?')
+
+    hits = list(root.rglob(CKPT_NAME))
+    if hits:
+        CKPT = str(hits[0])
+    # nuScenes root = whatever directory holds BOTH the metadata and the images.
+    for cand in root.rglob('v1.0-mini'):
+        if cand.is_dir() and (cand.parent / 'samples').is_dir():
+            NUSC = str(cand.parent)
+            break
+    print(f'[preflight] resolved CKPT={CKPT or "NOT FOUND"}')
+    print(f'[preflight] resolved NUSC={NUSC or "NOT FOUND"}')
+    mounted = sorted(str(d.relative_to(root)) for d in root.glob('*/*'))
+    for p, what in ((CKPT, 'checkpoint'), (NUSC, 'nuScenes root')):
+        if not Path(p).exists():
+            # Report the tree rather than just the missing path: the first run
+            # failed here and the cause (dataset still indexing vs wrong slug vs
+            # nested directory) is indistinguishable without seeing what mounted.
+            near = []
+            for d in (root.iterdir() if root.exists() else []):
+                try:
+                    near += [f'{d.name}/{c.name}' for c in list(d.iterdir())[:6]]
+                except Exception:
+                    pass
+            raise SystemExit(f'[preflight] missing {what}: {p}\n'
+                             f'  mounts: {mounted}\n'
+                             f'  contents: {near[:24]}\n'
+                             f'  if the mount list is missing a dataset, it was still '
+                             f'indexing at launch -- wait and re-run')
+    need = ['v1.0-mini', 'samples']
+    have = {d.name for d in Path(NUSC).iterdir() if d.is_dir()}
+    missing = [n for n in need if n not in have]
+    if missing:
+        raise SystemExit(f'[preflight] {NUSC} lacks {missing}; found {sorted(have)}\n'
+                         f'  this mirror is incomplete -- pick another nuScenes-mini dataset')
+    print(f'[preflight] OK  ckpt + nuScenes({sorted(have)})')
 
 
 def sh(cmd, **kw):
@@ -89,6 +145,7 @@ def to_plain(obj, depth=0):
 
 
 def main():
+    preflight()
     install()
     root = fetch_upstream()
     os.chdir(root)
