@@ -756,3 +756,34 @@ class ReactiveGTWorldModel(GTWorldModel):
             nv = fwd * new_speed
             out.append(_replace(a, xy=np.asarray(a.xy, float) + nv * dt, vxy=nv))
         return out
+
+
+class LivePerceptionWorldModel(GTWorldModel):
+    """GTWorldModel with agents from a real detector instead of annotations.
+
+    Everything else is unchanged -- same route, same free space, same ego
+    dynamics -- so a difference in closed-loop metrics is attributable to
+    perception and nothing else.
+
+    Free space still comes from the logged corridor rather than FlashOcc. That
+    is a deliberate partial substitution: replacing both branches at once would
+    leave a metric difference unattributable between them, and the object branch
+    is the one with saved output covering all ten scenes.
+    """
+
+    def __init__(self, *args, detections=None, score_thr: float = 0.25,
+                 **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        from .live_adapter import DATA, LiveDetectionAdapter, load_detections
+        det = detections if detections is not None else load_detections(
+            DATA / 'results_mini_train.json', DATA / 'results_mini_val.json')
+        self.adapter = LiveDetectionAdapter(self.nusc, det, score_thr=score_thr)
+        self.divergence: list = []
+
+    def agents_at(self, t: float, ego_xy: np.ndarray, ego_yaw: float) -> list[Agent]:
+        fr = self._frame(t)
+        # Detections were computed at the LOGGED pose; record how far the
+        # simulated ego has drifted from it, so the caveat is measured.
+        self.divergence.append(float(np.linalg.norm(
+            np.asarray(ego_xy, dtype=np.float64) - fr['xy'])))
+        return self.adapter.agents_at(fr['token'], ego_xy, ego_yaw)

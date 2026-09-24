@@ -503,6 +503,53 @@ What would change the answer is data, not method: the offline fit needs scenes
 that share error structure, and the online estimator needs a scene where IDM is
 wrong enough for a 3× gain correction to matter.
 
+## 17. GT oracle replaced with live detector output
+
+Every closed-loop number in this log was produced against `GTWorldModel` —
+perfect boxes, perfect velocities, perfect recall. None of them said anything
+about the pipeline under perception it would actually have.
+`LivePerceptionWorldModel` substitutes real BEVFormer output keyed by sample
+token (404 samples, all 10 scenes) and changes nothing else, so the difference
+is attributable to perception alone.
+
+| world model | ego-fault | other | clearance | brakes | completion | jerk | agents/step | divergence |
+|---|---|---|---|---|---|---|---|---|
+| GT oracle | 0 | **7** | **1.58 m** | **105** | **43.5%** | 1.47 | 42.2 | — |
+| live @ score 0.25 | 0 | 26 | 1.12 m | 125 | 34.7% | 1.29 | 39.5 | 7.7 m |
+| live @ score 0.40 | 0 | 23 | 1.16 m | 131 | 35.3% | 1.14 | 16.6 | 7.9 m |
+
+**Perception costs 3.7× the collisions** (7 → 26), 8.8 points of completion, and
+0.46 m of clearance. Ego-fault stays at 0 — real perception does not make the
+planner drive into things; it makes it stop more (105 → 125 brakes) and get
+struck more, which is the mechanism §6 established, now driven by detector error
+rather than a bad threshold.
+
+Raising the score threshold to 0.40 more than halves the agent count (39.5 →
+16.6) and barely moves the outcome: collisions 26 → 23, completion 34.7% →
+35.3%, brakes 125 → 131. The threshold trades false positives for misses at
+roughly a wash, which says the damage is not dominated by spurious detections.
+
+### The confound, stated
+
+Mean divergence between the simulated and logged ego is **7.7 m**. The frame
+transform is correct — detections are world-frame boxes rotated into the
+*simulated* ego frame — so this is not a coordinate error. It is a
+**field-of-view mismatch**: the detector only saw what was visible from the
+logged pose, so an object near the simulated ego but occluded or out of range
+from the logged one is simply absent.
+
+That is unfixable without running perception on sensor data from a pose the car
+never occupied, which nuScenes cannot provide. So the 3.7× is an upper bound on
+the cost of *detector error* and includes an unquantified share of viewpoint
+error. It is the honest number available, not a clean one.
+
+### Scope
+
+Only the object branch is substituted. Free space still comes from the logged
+corridor rather than FlashOcc, deliberately: replacing both at once would leave
+the difference unattributable between them, and only the detector has saved
+output covering all ten scenes.
+
 ---
 
 ## Retractions
