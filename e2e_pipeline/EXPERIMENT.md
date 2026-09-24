@@ -267,6 +267,41 @@ three in the test half would leave the training half with zero positives and no
 fit possible. The validation passed, but it rests on three scenes, and that is a
 property of nuScenes-mini rather than of the method.
 
+## 13. Residual dynamics — learned, and it does not generalise
+
+`z_{t+1} = f_physics(z, a) + g_theta(z, a)`, with the physics prior kept and a
+small MLP learning only what IDM gets wrong about agent motion. Supervised
+directly from logs: the target is *what the agent actually did* minus what the
+prior predicted, so no counterfactuals are needed.
+
+Scene-level split, both directions:
+
+| split | train | **held-out scenes** |
+|---|---|---|
+| train 0–4 / test 5–9 | +5.7% | **−1.4%** |
+| train 5–9 / test 0–4 | +6.5% | **−9.5%** |
+
+It fits the training scenes and makes prediction **worse** on unseen ones, in
+both directions. The physics prior alone is the better predictor out of sample.
+
+The cause is visible in the baseline itself: physics RMSE is **0.128 m/s** on
+scenes 0–4 and **0.279 m/s** on 5–9, a 2.2× difference. The scenes are
+heterogeneous enough that one group's residual structure does not describe the
+other's, so a model fitted on either learns something locally true and globally
+wrong.
+
+**Why calibration generalised and this did not.** The Platt map corrects a
+global scalar bias — essentially the base rate — which is one number and stable
+across scenes. The residual is a 6→2 function that must capture scene-specific
+agent behaviour. The simpler correction transferred; the richer one overfitted
+on the same data. That is an argument about data volume, not about the method:
+10 scenes support estimating a base rate and do not support learning a dynamics
+correction.
+
+Kept, disabled, and honest about it: `ResidualDynamics.residual()` returns
+exactly zero when untrained, so the object degrades to the physics prior rather
+than to a random initialisation.
+
 ---
 
 ## Retractions
