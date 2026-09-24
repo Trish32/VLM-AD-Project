@@ -44,6 +44,9 @@ from .safety_filter import SafetyFilter
 from .calibration import (PlattCalibrator, expected_calibration_error,
                           scale_for_risk_budget, scale_trajectory)
 from .structured import build_structured, structured_gate
+
+# Beyond this drift the logged future is not a counterfactual (see run()).
+COUNTERFACTUAL_MAX_DIVERGENCE_M = 3.0
 from .verifier import (DEGRADE_NONE, TrajectoryVerifier, compare_to_shadow,
                        decelerate_along)
 from .world_model import (AnalyticCritic, KinematicWorldModel,
@@ -379,6 +382,46 @@ class ClosedLoopRunner:
                     traj = np.asarray(sr.trajectory, dtype=np.float64)
                 lat['verifier'] += (time.perf_counter() - t0) * 1000
 
+            # Counterfactual safety, computed here because it needs the world
+            # model: the same agents, from the same pose, scored against the
+            # plan and against what the human actually did next. No rollout, so
+            # no divergence -- this is the one measure in the report that asks
+            # whether the PLANNER is unsafe rather than whether the simulation
+            # drifted.
+            # Only valid while the ego is NEAR the logged pose. The comparison
+            # transplants the human's next few poses onto wherever the ego
+            # currently is; at 22 m of drift that is not an alternative the
+            # human could have driven, it is a teleport out of the agent cloud,
+            # and it scores as low risk for the wrong reason. Measured on
+            # scene 6 before this gate: +0.3879 mean delta, 80% worse -- against
+            # -0.0004 and 14% across all scenes at low divergence.
+            #
+            # So the metric that was supposed to be divergence-free is only
+            # divergence-free where divergence is small. Gating it keeps that
+            # property instead of quietly losing it.
+            risk_plan = risk_log = 0.0
+            cf_ok = False
+            _cf_div = (float(np.linalg.norm(np.array([x, y]) - self.world._frame(t)['xy']))
+                       if hasattr(self.world, '_frame') else 0.0)
+            if len(traj) and _cf_div <= COUNTERFACTUAL_MAX_DIVERGENCE_M \
+                    and hasattr(self.world, 'samples'):
+                try:
+                    smp = self.world.samples
+                    ki = int(np.clip(round(t / cfg.dt), 0, len(smp) - 1))
+                    cy, sy = np.cos(-yaw), np.sin(-yaw)
+                    fut = []
+                    for h in range(1, len(traj) + 1):
+                        j = min(ki + h, len(smp) - 1)
+                        dv = smp[j]['xy'] - np.array([x, y])
+                        fut.append([cy * dv[0] - sy * dv[1], sy * dv[0] + cy * dv[1]])
+                    risk_plan = float(risk_model.evaluate(traj, scene.agents,
+                                                          dt=cfg.dt).total)
+                    risk_log = float(risk_model.evaluate(np.asarray(fut, float),
+                                                         scene.agents, dt=cfg.dt).total)
+                    cf_ok = True
+                except Exception:
+                    cf_ok = False
+
             t0 = time.perf_counter()
             control = ctrl.control(traj, v)
             lat['controller'] = (time.perf_counter() - t0) * 1000
@@ -402,6 +445,8 @@ class ClosedLoopRunner:
                 t=t, ego_xy=ego_xy, ego_yaw=yaw, ego_v=v,
                 accel=control.accel, steer=control.delta,
                 planned_traj=traj.copy(),
+                risk_planner=risk_plan, risk_logged=risk_log,
+                counterfactual_valid=cf_ok,
                 divergence_m=float(np.linalg.norm(
                     np.array([x, y]) - self.world._frame(t)['xy']))
                 if hasattr(self.world, '_frame') else 0.0,

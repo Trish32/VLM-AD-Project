@@ -115,6 +115,9 @@ class StepRecord:
     decision: str = ""
     planned_traj: np.ndarray | None = None   # (T,2) ego frame, as executed
     divergence_m: float = 0.0                # |ego - logged ego| this step
+    risk_planner: float = 0.0                # collision prob of the executed plan
+    risk_logged: float = 0.0                 # same, for the human's own future
+    counterfactual_valid: bool = False       # both risks actually computed
     agent_boxes: list = field(default_factory=list)   # [(xy, yaw, l, w, track_id)]
     predictions: dict = field(default_factory=dict)   # track_id -> (T,2) world
     latency_ms: dict = field(default_factory=dict)    # stage -> ms
@@ -384,7 +387,17 @@ def divergence_metrics(records: list[StepRecord], ego_length: float = 4.6,
                            logged_v=float(rec.ego_v)))
     if not obs:
         return {'n': 0}
+    # Counterfactual uses only steps where both risks were computed -- an
+    # emergency brake has no plan to compare, and averaging a 0.0 placeholder in
+    # would dilute the signal toward "identical", which is exactly how this
+    # metric failed the first time.
+    cf_obs = [StepObs(divergence=r.divergence_m, collided=False, progress_m=0.0,
+                      ego_v=r.ego_v, logged_v=r.ego_v,
+                      risk_planner=r.risk_planner, risk_logged=r.risk_logged)
+              for r in records if r.counterfactual_valid]
+    from .divergence_metrics import counterfactual_safety
     return {'n': len(obs),
+            'counterfactual': counterfactual_safety(cf_obs) if cf_obs else {'n': 0},
             'buckets': bucketed_collision_rate(obs),
             'recovery': recovery_rate([o.divergence for o in obs]),
             'progress': aggregate_scenes([obs]),
@@ -436,6 +449,12 @@ def format_report(m: dict) -> str:
                 hi = 'inf' if not np.isfinite(b['hi']) else f"{b['hi']:.0f}"
                 L.append(f"    {b['lo']:.0f}-{hi} m".ljust(22)
                          + f": {b['collision_rate']:.0%}  (n={b['n']})")
+        cf = d.get('counterfactual', {})
+        if cf.get('n'):
+            L.append(f"  vs human decision   : {cf['mean_delta']:+.4f} mean risk"
+                     f"   worse {cf['worse_rate']:.0%}"
+                     f"   much-worse {cf['much_worse_rate']:.0%}"
+                     f"   (n={cf['n']})")
         L += [f"  excursions >3 m     : {rec['excursions']}"
               + (f", recovery {rr:.0%}" if np.isfinite(rr) else ', none to recover')
               + (f", longest trap {rec['longest_unrecovered']} steps"

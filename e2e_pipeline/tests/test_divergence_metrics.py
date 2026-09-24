@@ -106,3 +106,33 @@ def test_single_scene_progress_matches_aggregate_of_one():
     sc = [_obs(div=d, prog=3.0) for d in np.linspace(1, 6, 6)]
     assert (progress_per_divergence(sc)['progress_per_div']
             == pytest.approx(aggregate_scenes([sc])['progress_per_div']))
+
+
+def test_counterfactual_is_gated_on_low_divergence():
+    """It is only divergence-free where divergence is small.
+
+    The metric transplants the human's next poses onto wherever the ego is. At
+    22 m of drift that is not an alternative the human could have driven -- it
+    teleports out of the agent cloud and scores as low risk for the wrong
+    reason. Measured on scene 6 before the gate: +0.3879 mean delta, 80% worse,
+    against -0.0309 and 18% across scenes at low divergence.
+    """
+    from e2e_pipeline.closed_loop import COUNTERFACTUAL_MAX_DIVERGENCE_M
+    assert 0 < COUNTERFACTUAL_MAX_DIVERGENCE_M <= 5.0
+
+
+def test_counterfactual_ignores_invalid_steps():
+    """Placeholder zeros must not dilute the signal toward 'identical'."""
+    from e2e_pipeline.metrics import StepRecord, divergence_metrics
+    recs = []
+    for i in range(6):
+        r = StepRecord(t=i * 0.5, ego_xy=np.array([float(i), 0.0]), ego_yaw=0.0,
+                       ego_v=5.0, accel=0.0, steer=0.0)
+        r.divergence_m = 0.5
+        # only half the steps carry a real comparison
+        r.counterfactual_valid = i % 2 == 0
+        r.risk_planner, r.risk_logged = (0.5, 0.1) if r.counterfactual_valid else (0.0, 0.0)
+        recs.append(r)
+    cf = divergence_metrics(recs)['counterfactual']
+    assert cf['n'] == 3, 'invalid steps leaked into the counterfactual'
+    assert cf['mean_delta'] == pytest.approx(0.4)
