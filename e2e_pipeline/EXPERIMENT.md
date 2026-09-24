@@ -649,6 +649,73 @@ omitted from the table. Safety and clearance stay meaningful because they are
 evaluated against the agents the pipeline actually perceived. The mode isolates
 perception; it cannot evaluate planning.
 
+## 20. Ego ODD: where the collisions are, and where the 7.7 m comes from
+
+### All 7 collisions are one scene, one failure mode
+
+| scene | step | along-track | cross-track | ego_v | logged_v |
+|---|---|---|---|---|---|
+| 6 | 13 | −11.7 m | 0.9 m | **0.0** | 4.2 |
+| 6 | 14 | −13.8 m | −1.0 m | **0.0** | 4.0 |
+| 6 | 15 | −15.4 m | −3.7 m | **0.0** | 3.9 |
+| 6 | 16 | −16.3 m | −6.8 m | **0.0** | 3.9 |
+| 6 | 17 | −16.1 m | −10.7 m | **0.0** | 4.1 |
+| 6 | 18 | −14.9 m | −14.7 m | **0.0** | 4.4 |
+| 6 | 19 | −13.6 m | −17.8 m | **0.0** | 4.6 |
+
+Every collision is **scene 6, steps 13–19, ego speed 0.0**, sitting 11–16 m
+behind where the recording has it while the logged car continues at ~4 m/s. Nine
+scenes contribute nothing.
+
+So the headline safety number is not a distributed property of the planner. It
+is **one sustained stop in one scene**, counted once per step for seven
+consecutive steps.
+
+### The 7.7 m divergence is longitudinal, and it is self-inflicted
+
+| | mean | \|mean\| | p95 |
+|---|---|---|---|
+| along-track | −2.54 m | **5.96 m** | 19.9 m |
+| cross-track | −1.26 m | 1.65 m | 5.7 m |
+
+**78% of the divergence is along-track.** It is not a path-following error and
+not a controller problem — the ego is on the right line, in the wrong place
+along it.
+
+Growth over the rollout says why:
+
+| step | \|along\| | \|cross\| | ego_v | logged_v | braking |
+|---|---|---|---|---|---|
+| 0 | 0.00 | 0.00 | 5.7 | 5.7 | 30% |
+| 2 | 0.19 | 0.16 | 5.7 | 5.3 | 30% |
+| 5 | 1.43 | 0.50 | 5.5 | 5.6 | 40% |
+| 10 | 5.75 | 1.72 | 4.7 | 5.6 | 60% |
+| 15 | 10.66 | 2.74 | 2.9 | 4.9 | 60% |
+| 19 | **15.27** | 4.06 | **2.1** | 5.0 | **80%** |
+
+The ego starts matched (5.7 vs 5.7 m/s) and brakes itself to a standstill while
+the recording holds ~5 m/s. Emergency braking climbs **30% → 80%**, speed falls
+5.7 → 2.1, and the gap compounds to 15 m.
+
+### The whole causal chain, finally
+
+    over-braking → falls behind the log → recorded agents drive into it
+         → "collisions" → read as a safety problem → more caution added
+         → more braking
+
+Every symptom this document chased traces to the first arrow. §19 proved the
+last one is an artefact (pin the ego, collisions go to zero); this shows the
+first one is the actual defect.
+
+### Priority
+
+1. **Reduce the emergency-brake rate.** It causes the divergence, which causes
+   the collisions. Everything else is downstream.
+2. Scene 6 specifically — it is the only scene producing collisions, and a
+   single-scene failure is far cheaper to diagnose than a distributed one.
+3. **Not** lateral tracking, **not** the controller, **not** the detector. Cross-track
+   divergence is 1.65 m mean and contributes 22%.
+
 ---
 
 ## Retractions
