@@ -145,6 +145,8 @@ class LoopConfig:
     use_structured: bool = False     # TTC-response gate on the structured view
     calibrate_risk: bool = False     # Platt-map the risk model's output
     risk_budget: float = 0.0         # >0: solve speed scale for this budget
+    unknown_prior: float = 0.0       # P(obstacle) per unobserved swept cell
+    veto_unknown: bool = True        # hard-reject unknown, vs price it softly
     follow_logged_ego: bool = False  # pin the ego to the logged trajectory
     rollout_steps: int = 0           # 0 = use the full candidate horizon
     world_model_keep: int = 3        # candidates surviving the rollout prune
@@ -322,7 +324,8 @@ class ClosedLoopRunner:
             t0 = time.perf_counter()
             risk_model = RiskModel(
                 ego=ego, tracker=self.tracker,
-                calibrator=self.calibrator if cfg.calibrate_risk else None)
+                calibrator=self.calibrator if cfg.calibrate_risk else None,
+                unknown_prior=cfg.unknown_prior)
             result = self.safety(candidates, scene, scores, risk_model)
             lat['safety_filter'] = (time.perf_counter() - t0) * 1000
 
@@ -414,10 +417,10 @@ class ClosedLoopRunner:
                         j = min(ki + h, len(smp) - 1)
                         dv = smp[j]['xy'] - np.array([x, y])
                         fut.append([cy * dv[0] - sy * dv[1], sy * dv[0] + cy * dv[1]])
-                    risk_plan = float(risk_model.evaluate(traj, scene.agents,
-                                                          dt=cfg.dt).total)
-                    risk_log = float(risk_model.evaluate(np.asarray(fut, float),
-                                                         scene.agents, dt=cfg.dt).total)
+                    risk_plan = float(risk_model.evaluate(traj, scene.agents, dt=cfg.dt,
+                                                          freespace=scene.freespace).total)
+                    risk_log = float(risk_model.evaluate(np.asarray(fut, float), scene.agents,
+                                                         dt=cfg.dt, freespace=scene.freespace).total)
                     cf_ok = True
                 except Exception:
                     cf_ok = False
@@ -878,7 +881,8 @@ class FlashOccWorldModel(GTWorldModel):
     the delta measured here belongs to occupancy alone.
     """
 
-    def __init__(self, *args, occ_cache=None, **kwargs) -> None:
+    def __init__(self, *args, occ_cache=None, veto_unknown: bool = True,
+                 **kwargs) -> None:
         super().__init__(*args, **kwargs)
         from pathlib import Path as _P
         from .freespace import FreeSpaceExtractor, GridConfig
@@ -893,7 +897,8 @@ class FlashOccWorldModel(GTWorldModel):
         occ_grid = GridConfig(x=(-40.0, 40.0, 0.4), y=(-40.0, 40.0, 0.4),
                               z=(-1.0, 5.4, 0.4))
         self.occ = FlashOccFreeSpaceAdapter(cache, occ_grid,
-                                            FreeSpaceExtractor(occ_grid))
+                                            FreeSpaceExtractor(occ_grid),
+                                            veto_unknown=veto_unknown)
         self.occ_missing = 0
 
     def freespace_at(self, t: float, ego_xy, ego_yaw):

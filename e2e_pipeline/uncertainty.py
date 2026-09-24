@@ -307,7 +307,8 @@ class RiskModel:
                  ego: EgoState,
                  tracker: TrackCovarianceTracker | None = None,
                  inflate_m: float = 0.0,
-                 calibrator=None) -> None:
+                 calibrator=None,
+                 unknown_prior: float = 0.0) -> None:
         """`calibrator` maps the raw probability onto observed frequencies.
 
         Without it this returns a MODEL's probability, measured over 966 rollout
@@ -325,6 +326,24 @@ class RiskModel:
         self.tracker = tracker
         self.inflate_m = float(inflate_m)
         self.calibrator = calibrator
+        # Probability that an unobserved cell the ego sweeps contains an
+        # obstacle. Zero reproduces the old behaviour, which is not "no risk"
+        # but UNQUANTIFIED risk: this model is agent-only, so a plan driving
+        # into a region no camera ever saw scored exactly as safely as one
+        # driving down an empty observed road.
+        #
+        # The drivable-area gate already excludes unknown cells
+        # (`traversable &= ~unknown`), but that is a hard veto on a different
+        # axis -- it cannot express "this plan is probably fine and might not
+        # be", so the probability the filter thresholds stayed silent about
+        # occlusion entirely.
+        #
+        # A prior makes the missed cases VISIBLE rather than correct. It does
+        # not discover what is behind the occlusion; it bounds how confident the
+        # number is allowed to be, which converts an unbounded unknown into a
+        # bounded estimate. Expect more braking -- that is the trade, not a
+        # side effect.
+        self.unknown_prior = float(unknown_prior)
 
     @staticmethod
     def _support_radius(half_len: np.ndarray, half_wid: np.ndarray,
@@ -381,7 +400,7 @@ class RiskModel:
     # -- main entry point ---------------------------------------------------
 
     def evaluate(self, ego_traj: np.ndarray, agents: list[Agent],
-                 dt: float = 0.5) -> RiskReport:
+                 dt: float = 0.5, freespace=None) -> RiskReport:
         """Collision risk of one candidate plan.
 
         Parameters
@@ -457,6 +476,14 @@ class RiskModel:
         # with it, so both are in the same units. Applied here rather than at
         # each call site: a threshold comparing against an uncalibrated number
         # somewhere would silently reintroduce the 6x scale error.
+        # Occlusion hazard: the swept path through unobserved space, priced at
+        # `unknown_prior` per step. Combined as independent survival with the
+        # agent term rather than max(), because "an unseen obstacle" and "a
+        # tracked agent" are different events and either can end the rollout.
+        if self.unknown_prior > 0.0 and freespace is not None and T:
+            unk = np.asarray(freespace.unknown_at(ego_traj), dtype=np.float64)
+            per_step = 1.0 - (1.0 - per_step) * (1.0 - self.unknown_prior * unk)
+
         raw_total = float(per_step.max()) if T else 0.0
         if self.calibrator is not None:
             total = float(self.calibrator(raw_total))

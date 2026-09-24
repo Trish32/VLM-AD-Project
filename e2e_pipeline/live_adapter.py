@@ -120,14 +120,68 @@ class FlashOccFreeSpaceAdapter:
     ablation reports both ego modes.
     """
 
-    def __init__(self, cache_path, grid, extractor) -> None:
+    def __init__(self, cache_path, grid, extractor, occlusion: bool = True,
+                 veto_unknown: bool = True) -> None:
         self.cache = np.load(str(cache_path))
         self.grid = grid
         self.extractor = extractor
         self.missing = 0
+        self.occlusion = bool(occlusion)
+        self.veto_unknown = bool(veto_unknown)
 
     def freespace_at(self, token: str):
         if token not in self.cache:
             self.missing += 1
             return None
-        return self.extractor(self.cache[token].astype(np.int64))
+        fs = self.extractor(self.cache[token].astype(np.int64))
+        if self.occlusion:
+            fs.unknown = ray_occlusion(fs.obstacle, fs.origin, fs.res)
+            if self.veto_unknown:
+                # HARD: unknown is not drivable. This is what freespace.py has
+                # always said and what no caller ever exercised, because nothing
+                # populated `unknown`.
+                fs.traversable = fs.traversable & ~fs.unknown
+            # SOFT (veto_unknown=False): unknown stays drivable and is priced by
+            # RiskModel(unknown_prior). The two are mutually exclusive by
+            # construction -- with the veto on, no surviving candidate ever
+            # enters an unknown cell, so the prior has nothing to price and
+            # measures exactly zero. Overlapping responsibilities again, the
+            # same shape as the TTC gate against the risk gate.
+        return fs
+
+
+def ray_occlusion(obstacle: np.ndarray, origin, res: float,
+                  n_rays: int = 720) -> np.ndarray:
+    """Cells hidden behind an obstacle on the ray from the ego, marked unknown.
+
+    Occupancy says what the sensor SAW. It cannot say what is behind a van, and
+    treating that as free is the over-confidence that makes a risk number
+    unbounded: a path into an occlusion scores identically to one down an
+    observed empty road.
+
+    Marking those cells unknown does not reveal what is there. It bounds how
+    confident the estimate may be -- with RiskModel(unknown_prior=p) the hidden
+    region carries at most p, so a missed hazard appears as elevated risk rather
+    than as silence.
+
+    Marches each ray outward in half-cell steps, which errs toward marking
+    slightly too much as occluded. That is the conservative direction, and for a
+    prior whose purpose is bounding confidence it is the right way to be wrong.
+    """
+    nx, ny = obstacle.shape
+    unknown = np.zeros((nx, ny), dtype=bool)
+    ex = int((0.0 - origin[0]) / res)
+    ey = int((0.0 - origin[1]) / res)
+    max_r = float(np.hypot(nx, ny))
+    for ang in np.linspace(-np.pi, np.pi, n_rays, endpoint=False):
+        dx, dy = np.cos(ang), np.sin(ang)
+        blocked = False
+        for r in np.arange(1.0, max_r, 0.5):
+            ix, iy = int(ex + dx * r), int(ey + dy * r)
+            if not (0 <= ix < nx and 0 <= iy < ny):
+                break
+            if blocked:
+                unknown[ix, iy] = True
+            elif obstacle[ix, iy]:
+                blocked = True
+    return unknown

@@ -136,3 +136,38 @@ def test_counterfactual_ignores_invalid_steps():
     cf = divergence_metrics(recs)['counterfactual']
     assert cf['n'] == 3, 'invalid steps leaked into the counterfactual'
     assert cf['mean_delta'] == pytest.approx(0.4)
+
+
+def test_unknown_prior_bounds_risk_through_occlusion():
+    """The prior prices unobserved space, and is exactly zero where all is seen."""
+    from e2e_pipeline.freespace import FreeSpace
+    from e2e_pipeline.scene import EgoState
+    from e2e_pipeline.uncertainty import RiskModel
+    nx, ny = 200, 120
+    def fs(unknown_beyond=None):
+        u = np.zeros((nx, ny), bool)
+        if unknown_beyond is not None:
+            u[unknown_beyond:, :] = True
+        return FreeSpace(traversable=np.ones((nx, ny), bool),
+                         obstacle=np.zeros((nx, ny), bool), unknown=u,
+                         esdf=np.full((nx, ny), 5.0, np.float32),
+                         origin=(-10.0, -30.0), res=0.5)
+    traj = np.stack([[6.0 * (t + 1), 0.0] for t in range(6)])
+    ego = EgoState(speed=12.0)
+    assert RiskModel(ego, unknown_prior=0.10).evaluate(
+        traj, [], freespace=fs()).total == pytest.approx(0.0)
+    assert RiskModel(ego, unknown_prior=0.10).evaluate(
+        traj, [], freespace=fs(80)).total == pytest.approx(0.10)
+    # and the prior BOUNDS it -- risk cannot exceed the stated prior on an
+    # otherwise empty scene, which is the whole point of the conservative prior
+    assert RiskModel(ego, unknown_prior=0.02).evaluate(
+        traj, [], freespace=fs(80)).total == pytest.approx(0.02)
+
+
+def test_ray_occlusion_marks_behind_obstacles_only():
+    from e2e_pipeline.live_adapter import ray_occlusion
+    obs = np.zeros((100, 100), bool)
+    obs[70, 45:55] = True                      # a wall ahead of the ego
+    u = ray_occlusion(obs, origin=(-20.0, -20.0), res=0.4)
+    assert u[85, 50], 'cells behind the wall should be unknown'
+    assert not u[60, 50], 'cells in front of the wall should be observed'
