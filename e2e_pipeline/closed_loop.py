@@ -818,3 +818,39 @@ class LivePerceptionWorldModel(GTWorldModel):
         self.divergence.append(float(np.linalg.norm(
             np.asarray(ego_xy, dtype=np.float64) - fr['xy'])))
         return self.adapter.agents_at(fr['token'], ego_xy, ego_yaw)
+
+
+class FlashOccWorldModel(GTWorldModel):
+    """GT objects, FlashOcc free space -- the dense branch isolated.
+
+    Deliberately partial. Substituting both branches at once would leave any
+    metric difference unattributable between them, which is the mistake §17 made
+    in reverse and §19 spent two sections undoing. Objects stay ground truth so
+    the delta measured here belongs to occupancy alone.
+    """
+
+    def __init__(self, *args, occ_cache=None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        from pathlib import Path as _P
+        from .freespace import FreeSpaceExtractor, GridConfig
+        from .live_adapter import FlashOccFreeSpaceAdapter
+        cache = occ_cache or (_P(__file__).resolve().parents[1] /
+                              'Occupancy/FlashOcc/occ_outputs/occ_cache.npz')
+        # FlashOcc's NATIVE grid, not GTWorldModel's. The corridor uses
+        # x[-20,60] y[-30,30] -> (200,150,16); FlashOcc emits x/y[-40,40] ->
+        # (200,200,16). Reusing the corridor's grid raised a shape error rather
+        # than silently misaligning, which is the good outcome -- a resample
+        # would have shifted every voxel by 10 m in y with no error at all.
+        occ_grid = GridConfig(x=(-40.0, 40.0, 0.4), y=(-40.0, 40.0, 0.4),
+                              z=(-1.0, 5.4, 0.4))
+        self.occ = FlashOccFreeSpaceAdapter(cache, occ_grid,
+                                            FreeSpaceExtractor(occ_grid))
+        self.occ_missing = 0
+
+    def freespace_at(self, t: float, ego_xy, ego_yaw):
+        fr = self._frame(t)
+        fs = self.occ.freespace_at(fr['token'])
+        if fs is None:
+            self.occ_missing += 1
+            return super().freespace_at(t, ego_xy, ego_yaw)
+        return fs

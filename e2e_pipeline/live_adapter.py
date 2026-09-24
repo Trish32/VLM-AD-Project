@@ -101,3 +101,33 @@ class LiveDetectionAdapter:
                              score=float(b.get('detection_score', 1.0)),
                              label=0))
         return out
+
+
+class FlashOccFreeSpaceAdapter:
+    """Cached FlashOcc occupancy in place of the synthetic corridor.
+
+    `GTWorldModel.freespace_at` synthesises a band around the logged route. That
+    is a stand-in for occupancy, not occupancy -- it knows the road because it
+    knows where the car went. This replays real FlashOcc output, reduced by the
+    same `FreeSpaceExtractor` the pipeline already uses, so the difference is
+    the dense branch's error and nothing else.
+
+    SAME CAVEAT AS THE DETECTOR. The volume was inferred once, from the logged
+    pose. A simulated ego that has drifted is reading occupancy for a viewpoint
+    it no longer occupies -- and unlike boxes, a voxel grid cannot be
+    transformed into the new frame without resampling something that was never
+    observed. So this is exact only at zero divergence, which is why the
+    ablation reports both ego modes.
+    """
+
+    def __init__(self, cache_path, grid, extractor) -> None:
+        self.cache = np.load(str(cache_path))
+        self.grid = grid
+        self.extractor = extractor
+        self.missing = 0
+
+    def freespace_at(self, token: str):
+        if token not in self.cache:
+            self.missing += 1
+            return None
+        return self.extractor(self.cache[token].astype(np.int64))

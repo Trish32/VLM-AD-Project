@@ -889,6 +889,64 @@ Three reasons, all of which apply to other sections of this log:
 withdrawn.** The map was the right fix and the measurement was wrong, which is
 the inverse of the usual failure in this document.
 
+## 24. Free-space error isolated: FlashOcc in place of the synthetic corridor
+
+`GTWorldModel` synthesises a band around the logged route — a stand-in that
+knows the road because it knows where the car went. `FlashOccWorldModel` replays
+real FlashOcc occupancy (404 frames cached, 0.19 s/frame) through the same
+`FreeSpaceExtractor`, with **objects left as ground truth** so the delta belongs
+to the dense branch alone.
+
+| config | ego-fault | other | clearance | brakes | brake @ 0/5/10/15/19 | slope |
+|---|---|---|---|---|---|---|
+| **simulated** corridor | 0 | 7 | 1.58 m | 105 | 30/40/60/60/80% | +2.5 |
+| **simulated** FlashOcc | **1** | **15** | **0.78 m** | 87 | 40/20/50/60/60% | +1.7 |
+| **pinned** corridor | 0 | 0 | 1.94 m | 44 | 40/20/20/30/20% | −0.6 |
+| **pinned** FlashOcc | 0 | 0 | **1.94 m** | **35** | 40/10/10/20/30% | −0.3 |
+
+### Real occupancy is better where it can be read, worse where it cannot
+
+**Pinned (divergence = 0):** brakes 44 → **35** (−20%) at identical safety —
+same zero collisions, same 1.94 m clearance. Real occupancy beats the synthetic
+corridor outright, the same direction and similar magnitude as the real map in
+§23 (−39%).
+
+**Simulated:** clearance collapses 1.58 → 0.78 m, collisions 7 → 15, and the
+**first ego-fault collision in this entire document** appears. Braking still
+falls (105 → 87) and the slope still flattens (+2.5 → +1.7).
+
+### Why the simulated case degrades, and why it is not FlashOcc's fault
+
+A voxel grid cannot be transformed to a new viewpoint. Detector boxes can —
+they are world-frame objects, rotated into whatever ego frame you like, which
+is why §17's live detections stayed usable at 7.7 m divergence. Occupancy is
+inferred *in a frame*, and reading it from a pose 7.7 m away means reading the
+wrong cells, with no way to resample what was never observed.
+
+So the simulated row measures **occupancy misalignment**, not occupancy quality,
+and the pinned row measures quality. They disagree because they measure
+different things.
+
+That ego-fault collision is worth noting precisely: it is the pipeline driving
+into something, and it appears only when free space is both real *and*
+misaligned. A corridor that is wrong-but-smooth degrades gracefully; a voxel
+grid that is right-but-shifted puts drivable surface where an obstacle is.
+
+### A near-miss worth recording
+
+The first attempt reused `GTWorldModel`'s grid — x[−20,60] y[−30,30] →
+(200,150,16) — against FlashOcc's native (200,200,16) and **raised a shape
+error**. That was the good outcome. Had the shapes matched by coincidence, every
+voxel would have been offset 10 m in y with no error at all, and the ablation
+would have produced a confident number for a silently misaligned map.
+
+### Scope
+
+Objects remain GT throughout, as specified. Whether free-space and object errors
+interact is a separate question and deliberately unmeasured here — combining
+them would leave any difference unattributable between the two branches, which
+is the confound §17 introduced and §19 spent two sections removing.
+
 ---
 
 ## Retractions
