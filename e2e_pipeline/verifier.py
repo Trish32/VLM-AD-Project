@@ -63,6 +63,7 @@ MAX_CURVATURE = 0.35     # 1/m, ~2.9 m turning radius
 MAX_LAT_ACCEL = 5.5      # m/s^2 (filter: 4.0)
 MIN_GAP = 0.15           # m, polygon separation
 STOPPED_MPS = 0.5        # at or below this the plan counts as stopped
+STATIONARY_PLAN_M = 0.5  # total arc below this and the plan is not going anywhere
 SPEED_LIMIT_MPS = 16.7   # 60 km/h; configured, NOT from the map
 
 SEVERITY = ('warn', 'reject')
@@ -226,6 +227,17 @@ class TrajectoryVerifier:
         """
         out = []
         pts = np.vstack([[0.0, 0.0], traj])
+
+        # A conflict the plan did not cause and cannot avoid is not a reason to
+        # reject the plan. When the ego is already stopped, the fallback IS the
+        # plan, so rejecting achieves nothing except firing a warning -- and
+        # measurement showed this was the ENTIRE false-positive population: all
+        # 80 firings were emergency-brake steps at a median ego speed of
+        # 0.00 m/s. Agents driving into a stationary ego are a real hazard, but
+        # not one the trajectory verifier can act on.
+        if float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum()) < STATIONARY_PLAN_M:
+            return out
+
         yaws = yaw_from_waypoints(pts)
         for i, (p, yaw) in enumerate(zip(pts[1:], yaws[1:]), start=1):
             # Inflating the ego rather than passing a gap to obb_overlap, which
