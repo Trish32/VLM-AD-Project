@@ -146,3 +146,77 @@ class TemperatureCalibrator(PlattCalibrator):
     @property
     def temperature(self) -> float:
         return 1.0 / self.a if self.a else float('inf')
+
+
+# --- risk as a signal, not a veto -------------------------------------------
+#
+# The safety filter treated risk as a hard constraint whose only fallback was a
+# hard stop: `risk > max_risk` rejected a candidate, and rejecting all of them
+# returned an emergency brake. The risk model therefore controlled the parking
+# brake directly, with no intermediate response available -- the planner was
+# never told the risk, it only discovered that nothing survived.
+#
+# Measured consequence: the emergency brake fired on 102-143 of 200 steps, which
+# makes it the normal operating mode rather than an exception, and a stationary
+# ego was rear-ended 30 times.
+#
+# The separation restored here: the risk model SCORES, the planner DECIDES, and
+# the filter vetoes only what is genuinely unacceptable.
+
+RISK_FREE = 0.02          # at or below this, no speed reduction
+RISK_SATURATE = 0.25      # at or above this, maximum reduction
+MAX_REDUCTION = 0.65      # never scale below 35% of the planned speed
+EMERGENCY_RISK = 0.85     # filter veto: "no acceptable action exists"
+
+
+def risk_speed_scale(risk_calibrated: float,
+                     free: float = RISK_FREE,
+                     saturate: float = RISK_SATURATE,
+                     max_reduction: float = MAX_REDUCTION) -> float:
+    """Calibrated risk -> a multiplier on planned speed. Graded, not binary.
+
+    Linear between `free` and `saturate` rather than a step: the point of the
+    change is that a slightly risky situation should produce a slightly slower
+    plan, where the veto produced either full speed or a dead stop.
+
+    Floored at `1 - max_reduction` rather than reaching zero. A response that can
+    reach zero is a stop by another name, and reintroduces exactly the failure
+    being removed -- stopping in traffic is itself dangerous, as 30 rear-end
+    collisions in this project demonstrate. Stopping remains available, but only
+    through the filter's emergency path, which is what it is for.
+
+    REQUIRES A CALIBRATED INPUT. These thresholds are in real probability units.
+    Feeding the raw RiskModel output -- over-confident by ~6x in this region --
+    would saturate the response on situations carrying 2% true risk, which is
+    the original pathology with extra steps.
+    """
+    r = float(np.clip(risk_calibrated, 0.0, 1.0))
+    if r <= free:
+        return 1.0
+    frac = min(1.0, (r - free) / max(saturate - free, 1e-9))
+    return float(1.0 - max_reduction * frac)
+
+
+def scale_trajectory(traj, scale: float):
+    """Resample a plan to `scale` of its arc length, keeping its shape.
+
+    Shape-preserving for the reason established in d0f853c: a straight-line
+    substitute discards lateral intent and can brake a plan INTO the obstacle it
+    was steering around.
+    """
+    t = np.asarray(traj, dtype=np.float64)
+    if scale >= 1.0 or len(t) == 0:
+        return t
+    path = np.vstack([[0.0, 0.0], t])
+    step = np.linalg.norm(np.diff(path, axis=0), axis=1)
+    cum = np.cumsum(step)
+    total = float(cum[-1])
+    if total < 1e-6:
+        return t
+    out = np.empty_like(t)
+    for i, s_ in enumerate(np.linspace(0.0, total * scale, len(t) + 1)[1:]):
+        j = min(int(np.searchsorted(cum, s_)), len(step) - 1)
+        lo = cum[j - 1] if j else 0.0
+        w = 0.0 if step[j] < 1e-9 else (s_ - lo) / step[j]
+        out[i] = path[j] + w * (path[j + 1] - path[j])
+    return out
