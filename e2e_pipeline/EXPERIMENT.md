@@ -342,6 +342,64 @@ agreement between prediction and outcome, not usefulness, and on a degenerate
 distribution it rewards a model that has stopped saying anything. Read it
 alongside the operating point, never alone.
 
+## 15. TTC gate: logic error found, fixed, then retired anyway
+
+Diagnosed in two rounds, because the second problem only became visible once the
+first was fixed.
+
+### Round 1 — the logic was wrong, not the threshold
+
+Every firing recorded with its TTC, ego speed, agent speed and whether a
+collision followed:
+
+| scene | ttc | ego v | agent v | "closing" | realised min clearance | collided |
+|---|---|---|---|---|---|---|
+| 5 | 0.9 s | 15.3 | 14.0 | **25.3** | 4.16 m | no |
+| 5 | 1.4 s | 15.3 | 14.2 | **28.2** | 4.48 m | no |
+| 7 | 1.3 s | 3.3 | 18.3 | 15.0 | 2.58 m | no |
+
+**0 of 36 firings preceded a collision.** The closing speeds give it away: 25.3
+m/s is the *sum* of 15.3 and 14.0, not the difference. These are oncoming
+vehicles in the opposite lane, approaching along the sight line and passing
+comfortably 4 m apart.
+
+`time_to_collision` used range ÷ range-rate, which ignores whether the paths
+intersect at all. Replaced with **closest point of approach**:
+
+    t* = -(p · v_rel) / |v_rel|²        miss = |p + v_rel · t*|
+
+and a conflict requires `miss` under a vehicle width. Discrimination check:
+
+| case | closing | old | **CPA** |
+|---|---|---|---|
+| oncoming, opposite lane | +29.0 | 0.8 s | **inf** |
+| oncoming, our lane | +29.3 | 0.8 s | **0.8 s** |
+| parked car beside us | +15.0 | 1.3 s | **inf** |
+| stopped car in our lane | +15.3 | 1.3 s | **1.3 s** |
+
+Near-identical closing speeds, opposite verdicts — only the miss distance
+differs. Firings fell **36 → 3**, each a genuinely stationary obstacle in the
+ego's own path.
+
+### Round 2 — the response is still wrong, and redundant
+
+| config | ego-fault | other | clearance | brakes | completion | firings |
+|---|---|---|---|---|---|---|
+| baseline | 0 | 6 | 1.60 m | 104 | 43.6% | 0 |
+| + TTC gate (CPA) | 0 | **18** | 1.51 m | 109 | **36.7%** | 4 |
+
+**4 firings cost 12 additional collisions and 6.9 points of completion.** Each
+one brakes an already-admissible plan, and braking is what gets a vehicle
+rear-ended — the mechanism §6 and §7 established.
+
+So the detection was repairable and the response is not. It is also redundant:
+the safety filter's risk gate already covers these conflicts, and covers them by
+**filtering candidates** rather than decelerating a chosen one. Two mechanisms
+for one responsibility, and the better-placed one already exists.
+
+Retired rather than deleted — `time_to_collision` is now correct and feeds the
+structured representation, and `enabled=True` reproduces both measurements.
+
 ---
 
 ## Retractions

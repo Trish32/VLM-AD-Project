@@ -63,20 +63,20 @@ def test_slow_agent_is_stationary_not_straight():
 def test_gate_fires_when_closing_fast_without_slowing():
     st = build_structured(_scene([_ag(15.0, 0.0)]))
     cruise = np.stack([[6.0 * (t + 1), 0.0] for t in range(6)])
-    assert structured_gate(st, cruise, 12.0)
+    assert structured_gate(st, cruise, 12.0, enabled=True)
 
 
 def test_gate_silent_when_the_plan_slows():
     st = build_structured(_scene([_ag(15.0, 0.0)]))
     braking = np.stack([[2.0 * (t + 1), 0.0] for t in range(6)])
-    assert structured_gate(st, braking, 12.0) == []
+    assert structured_gate(st, braking, 12.0, enabled=True) == []
 
 
 def test_gate_silent_when_the_plan_is_already_stopped():
     """The false-positive class profiling caught before integration."""
     st = build_structured(_scene([_ag(6.0, 0.0)], speed=0.0))
     stopped = np.zeros((6, 2))
-    assert structured_gate(st, stopped, 0.0) == []
+    assert structured_gate(st, stopped, 0.0, enabled=True) == []
 
 
 def test_threshold_sits_below_the_observed_median():
@@ -130,7 +130,9 @@ def test_merging_conflict_gate_can_fire():
     """
     from e2e_pipeline.structured import (LaneContext, build_lane_facts,
                                          lane_conflict_gate)
-    merging = _ag(12.0, 4.0, vx=-6.0, tid=2)     # feeder lane, closing hard
+    # Must CONVERGE: under CPA an agent holding 4 m of lateral offset is
+    # correctly not a conflict, however fast it closes along the sight line.
+    merging = _ag(12.0, 4.0, vx=-6.0, vy=-3.0, tid=2)
     scene = _scene([merging], speed=10.0)
     ctx = LaneContext(_FakeMap(), np.zeros(2), 0.0)
     facts = build_lane_facts(ctx, scene)
@@ -145,3 +147,27 @@ def test_merging_gate_silent_when_not_closing():
     ctx = LaneContext(_FakeMap(), np.zeros(2), 0.0)
     facts = build_lane_facts(ctx, scene)
     assert lane_conflict_gate(facts, build_structured(scene)) == []
+
+
+def test_gate_is_retired_by_default():
+    """Retired after two rounds of diagnosis; opt-in only. See structured_gate."""
+    st = build_structured(_scene([_ag(15.0, 0.0)]))
+    cruise = np.stack([[6.0 * (t + 1), 0.0] for t in range(6)])
+    assert structured_gate(st, cruise, 12.0) == []
+    assert structured_gate(st, cruise, 12.0, enabled=True)
+
+
+def test_cpa_ignores_oncoming_traffic_in_the_opposite_lane():
+    """The logic error the gate's 36 useless firings traced to.
+
+    Range/range-rate reads an oncoming car one lane over as an imminent head-on,
+    because closing speed along the sight line is the SUM of both speeds.
+    Closest point of approach asks whether the paths actually meet.
+    """
+    opposite = _ag(23.0, 3.5, vx=-14.0)
+    same_lane = _ag(23.0, 0.0, vx=-14.0)
+    assert time_to_collision(opposite, 15.3)[0] == float('inf')
+    assert np.isfinite(time_to_collision(same_lane, 15.3)[0])
+    # closing speeds are nearly identical; only the miss distance differs
+    assert abs(time_to_collision(opposite, 15.3)[1]
+               - time_to_collision(same_lane, 15.3)[1]) < 1.0

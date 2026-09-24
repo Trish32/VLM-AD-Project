@@ -166,13 +166,35 @@ def turn_observable(agent) -> bool:
     return _forecast_yaw_rate(agent) is not None
 
 
-def time_to_collision(agent, ego_speed: float) -> tuple[float, float, float]:
-    """(ttc_s, closing_mps, distance_m) along the line joining ego and agent.
+def time_to_collision(agent, ego_speed: float, miss_threshold: float = 2.5
+                      ) -> tuple[float, float, float]:
+    """(ttc_s, closing_mps, distance_m) by CLOSEST POINT OF APPROACH.
 
-    Closing speed is the relative velocity projected onto the line of sight,
-    which is the quantity that actually determines whether a gap shrinks. Using
-    raw speed instead would flag a fast car driving away, and miss a slow one
-    reversing toward us.
+    The previous version projected relative velocity onto the line of sight and
+    divided range by it. That is range/range-rate, and it is wrong in a way that
+    only shows up in traffic: it ignores whether the paths ever intersect.
+
+    Diagnosed over 36 firings of the gate built on it. Every one was oncoming
+    traffic in the opposite lane -- ego 15.3 m/s, agent 14.0 m/s, "closing"
+    25.3 m/s, which is the SUM of the speeds because the vehicles approach along
+    the sight line. LOS-TTC read 0.9 s; the realised minimum clearance over the
+    following 3 s was 4.16 m. They passed each other comfortably. **0 of 36
+    firings preceded a collision.**
+
+    CPA fixes this by asking when the two actually get closest and how close that
+    is. Relative position p and relative velocity v give
+
+        t* = -(p . v) / |v|^2          time of closest approach
+        miss = |p + v t*|              separation at that moment
+
+    and a conflict exists only when `miss` is under a vehicle-width threshold.
+    Two cars passing in adjacent lanes have a small t* and a large miss, and are
+    correctly ignored; a car in our lane has a small t* and a small miss, and is
+    correctly flagged.
+
+    `closing_mps` is still reported along the sight line, because that is the
+    quantity a human reads as "how fast is it coming at me" -- but it no longer
+    drives the decision.
     """
     p = np.asarray(agent.xy, dtype=np.float64)
     dist = float(np.linalg.norm(p))
@@ -182,11 +204,20 @@ def time_to_collision(agent, ego_speed: float) -> tuple[float, float, float]:
 
     v_agent = np.asarray(agent.vxy, dtype=np.float64)
     v_ego = np.array([float(ego_speed), 0.0])          # ego frame: +x forward
-    closing = float((v_ego - v_agent) @ los)           # + means gap shrinking
+    v_rel = v_agent - v_ego                            # agent as seen from ego
+    closing = float((v_ego - v_agent) @ los)           # reported, not decisive
 
-    if closing < TTC_MIN_CLOSING:
+    speed_rel = float(np.linalg.norm(v_rel))
+    if speed_rel < 1e-6:
         return float('inf'), closing, dist
-    return dist / closing, closing, dist
+
+    t_cpa = -float(p @ v_rel) / (speed_rel ** 2)
+    if t_cpa <= 0.0:
+        return float('inf'), closing, dist            # closest approach is past
+    miss = float(np.linalg.norm(p + v_rel * t_cpa))
+    if miss > miss_threshold:
+        return float('inf'), closing, dist            # paths do not conflict
+    return t_cpa, closing, dist
 
 
 def build_structured(scene: SceneRepresentation, light: str = 'none'
@@ -225,24 +256,43 @@ class Intervention:
 
 
 def structured_gate(struct: StructuredScene, traj: np.ndarray, ego_speed: float,
-                    dt: float = 0.5) -> list[Intervention]:
-    """The gate this module exists for: does the plan RESPOND to the facts?
+                    dt: float = 0.5, enabled: bool = False) -> list[Intervention]:
+    """RETIRED -- returns nothing unless explicitly `enabled=True`.
 
-    The safety filter asks whether a trajectory collides. This asks something
-    different and previously unchecked: whether a trajectory *reacts*. A plan
-    that threads past a vehicle closing at 2 s TTC without shedding any speed may
-    be geometrically clear and still wrong, because it has no margin for that
-    vehicle doing anything other than exactly what was predicted.
+    Two rounds of diagnosis, both recorded because the second only became
+    visible once the first was fixed.
+
+    ROUND 1, LOGIC. The gate fired 36 times and not one firing preceded a
+    collision. Every one was oncoming traffic in the opposite lane: ego 15.3
+    m/s, agent 14.0 m/s, "closing" 25.3 m/s -- the SUM, because they approach
+    along the sight line -- while realised clearance was 4.16 m. The old
+    `time_to_collision` used range/range-rate, which ignores whether the paths
+    intersect at all. Replaced with closest point of approach; firings fell
+    36 -> 3, each a genuinely stationary obstacle in the ego's own path.
+
+    ROUND 2, RESPONSE. With detection correct the gate still degrades the loop:
+    4 firings cost 12 additional collisions and 6.9 points of route completion.
+    Each firing brakes an already-admissible plan, and braking is what gets a
+    vehicle rear-ended -- the mechanism measured repeatedly in this project.
+
+    The detection was repairable; the response is not. It is also redundant: the
+    safety filter's risk gate already covers these conflicts, and covers them by
+    FILTERING CANDIDATES rather than decelerating a chosen one. Two mechanisms
+    for one responsibility, and the better-placed one already exists.
+
+    Retired rather than deleted -- `time_to_collision` and the structured facts
+    it feeds are correct and useful for reporting, and `enabled=True` reproduces
+    the measurements above.
     """
+    if not enabled:
+        return []
+
     out = []
     if len(traj) < 2:
         return out
 
-    # Same guard the verifier needed: when the plan is already stopped, "it does
-    # not decelerate" is vacuous and the substitute would be the plan itself.
-    # Profiling caught this BEFORE integration -- unguarded it fired on 46% of
-    # steps at a firing median ego speed of 0.07 m/s, reproducing the verifier's
-    # original false-positive population exactly.
+    # When the plan is already stopped, "it does not decelerate" is vacuous and
+    # the substitute would be the plan itself.
     arc = float(np.linalg.norm(np.diff(np.vstack([[0.0, 0.0], np.asarray(traj)]),
                                        axis=0), axis=1).sum())
     if arc < STATIONARY_PLAN_M:
@@ -265,15 +315,10 @@ def structured_gate(struct: StructuredScene, traj: np.ndarray, ego_speed: float,
 
 # --- lane topology ----------------------------------------------------------
 #
-# Intent inferred from bare kinematics cannot mean much: "left turn" is a claim
-# about a lane graph, and without one the classifier can only say "drifting
-# sideways". This adds the graph, from the nuScenes map expansion.
-#
-# It is OPTIONAL and supplied by the caller rather than reached for.
-# `SceneRepresentation` is ego-frame and map-free by design -- that is what makes
-# the detector swappable -- so pulling a map into it would couple the scene
-# contract to one dataset. `LaneContext` carries the map and the global ego pose
-# alongside, and everything degrades to None when it is absent.
+# Intent from bare kinematics cannot mean much: "left turn" is a claim about a
+# lane graph. This adds the graph, from the nuScenes map expansion. It is
+# OPTIONAL and caller-supplied -- SceneRepresentation is map-free by design, and
+# reaching for a map inside it would couple the scene contract to one dataset.
 
 LANE_RADIUS_M = 3.0          # lane assignment tolerance
 
