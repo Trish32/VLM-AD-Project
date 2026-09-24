@@ -843,6 +843,52 @@ that §19 discredited. That is worth more than the individual results: it means
 though §§17–21 showed the oracle was distorting the absolute numbers around
 them.
 
+## 23. The map work re-measured — §12's null was a metric artefact
+
+§12 replaced the 10 m synthetic corridor with nuScenes drivable-area polygons,
+got 2.6× the coverage, and measured "one fewer emergency brake in 200". That
+conclusion predates both the fault split (§6) and the divergence loop (§21), and
+§21 predicted a specific signature the original measurement was not looking for:
+a **flatter brake-rate curve**, not a lower average.
+
+### Simulated ego — the signature appears
+
+| config | ego | other | clearance | brakes | divergence | brake rate @ step 0/5/10/15/19 | slope |
+|---|---|---|---|---|---|---|---|
+| 10 m corridor | 0 | 7 | 1.58 m | 105 | 6.6 m | 30/40/60/60/80% | +2.5 pp/step |
+| **real map** | 0 | 10 | 1.34 m | **86** | 7.3 m | 30/40/50/40/50% | **+0.8 pp/step** |
+
+The slope flattens **3×** and braking falls 18%. Collisions rise 7 → 10 and
+clearance drops — but §19 established those are divergence artefacts under a
+simulated ego, and divergence is indeed slightly higher (6.6 → 7.3 m) precisely
+*because* the ego brakes less and therefore travels further from the recording.
+
+### Pinned ego — divergence controlled, and it is unambiguous
+
+| config (divergence = 0) | ego | other | clearance | brakes |
+|---|---|---|---|---|
+| 10 m corridor | 0 | 0 | 1.94 m | 44 |
+| **real map** | 0 | 0 | **1.94 m** | **27** |
+
+**−39% emergency braking at identical safety** — same zero collisions, same
+clearance to two decimals. With the confound removed there is no trade-off at
+all; the map is simply better.
+
+### Why §12 missed it
+
+Three reasons, all of which apply to other sections of this log:
+
+1. It measured the **average** brake rate, where the effect is in the *slope*.
+   §21's loop is a compounding process, so the right signature is curvature.
+2. Its safety comparison used the undifferentiated collision count, which §6
+   showed was counting rear-ends and §19 showed was counting divergence.
+3. It ran only in simulated-ego mode, where the benefit (driving more) inflates
+   the artefact (divergence) and the two partly cancel.
+
+**§12's conclusion — "the harness is not the binding constraint" — is
+withdrawn.** The map was the right fix and the measurement was wrong, which is
+the inverse of the usual failure in this document.
+
 ---
 
 ## Retractions
