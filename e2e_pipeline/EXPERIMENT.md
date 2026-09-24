@@ -716,6 +716,72 @@ first one is the actual defect.
 3. **Not** lateral tracking, **not** the controller, **not** the detector. Cross-track
    divergence is 1.65 m mean and contributes 22%.
 
+## 21. The brake rate is driven by divergence, not by scene content
+
+§20 showed emergency braking climbing 30% → 80% across a rollout. A rate that
+*grows* is not simple over-caution, which would be roughly constant — it
+suggests a feedback loop. `follow_logged_ego` pins divergence to zero by
+construction, so any surviving step-dependence must be scene content.
+
+### Pinning divergence removes the climb
+
+| step | simulated | **pinned (div = 0)** |
+|---|---|---|
+| 0 | 30% | 40% |
+| 2 | 30% | 30% |
+| 5 | 40% | 20% |
+| 8 | 40% | 20% |
+| 11 | 60% | 10% |
+| 14 | 80% | 50% |
+| 17 | 80% | 10% |
+| 19 | **80%** | **20%** |
+| **all steps** | **52%** | **22%** |
+
+With the ego on the logged trajectory the rate is flat and noisy (10–50%, no
+trend) and **less than half** the simulated rate. The climb is entirely an
+artefact of the ego drifting.
+
+### Divergence predicts braking, controlling for time
+
+Both divergence and step index grow together, so the table above cannot separate
+them alone. Splitting late steps (10–19) at the median divergence does:
+
+| steps 10–19 | n | brake rate |
+|---|---|---|
+| below median divergence (5.0 m) | 50 | 60% |
+| **above median** | 50 | **80%** |
+
+At the same point in the rollout, more accumulated divergence means 20 points
+more braking. Binned across all steps:
+
+| divergence | n | brake rate |
+|---|---|---|
+| [0.0, 0.5) | 58 | 57% |
+| [0.5, 2.0) | 25 | 20% |
+| [2.0, 5.0) | 59 | 44% |
+| [5.0, 10.0) | 22 | 68% |
+| [10.0, ∞) | 36 | **72%** |
+
+Monotone above 0.5 m. The first bin breaks the pattern because it is dominated
+by step 0, where divergence is zero by construction and the ego is often already
+braking from its initial state — a confound of the binning, not a
+counterexample.
+
+### The feedback loop, confirmed
+
+    brake → fall behind the log → corridor and agent geometry stop matching
+      where the ego is → fewer candidates survive → brake
+
+This is the first hypothesis in this document to survive its own test. It also
+explains why threshold tuning kept producing partial fixes: every one of them
+weakened the loop without breaking it, so the rate fell but the shape stayed.
+
+**What this means for the fix.** The lever is not a threshold. It is either
+keeping the ego near the corridor the scene was recorded around, or making the
+scene representation robust to an ego that has drifted — free space and agent
+geometry that stay valid off the logged path. The second is the real
+requirement; the first is what the pinned mode does artificially.
+
 ---
 
 ## Retractions
