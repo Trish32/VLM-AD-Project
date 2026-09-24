@@ -52,6 +52,7 @@ from .verifier import (DEGRADE_NONE, TrajectoryVerifier, compare_to_shadow,
 from .world_model import (AnalyticCritic, KinematicWorldModel,
                           plan_with_world_model)
 from .scene import Agent, EgoState, SceneRepresentation
+from .temporal_occlusion import TemporalOcclusionMemory
 from .uncertainty import RiskModel, TrackCovarianceTracker
 
 _SIM_DIR = Path(__file__).resolve().parent.parent / 'simulator'
@@ -373,16 +374,26 @@ class ClosedLoopRunner:
                 scale = scale_for_risk_budget(
                     traj, scene, cfg.risk_budget, self.calibrator,
                     lambda p: risk_model.evaluate(np.asarray(p, float),
-                                                  scene.agents, dt=cfg.dt).total)
+                                                  scene.agents, dt=cfg.dt,
+                                                  freespace=scene.freespace).total)
                 traj = scale_trajectory(traj, scale)
 
             # (c) ECE monitoring: record what was predicted for the plan about
             # to be executed. The outcome is filled in below once the step has
             # happened, so calibration drift is observable in the loop rather
             # than only in an offline script.
+            #
+            # `freespace` omitted here until measured: the recorded risk then
+            # excluded the occlusion prior that the FILTER had just applied, so
+            # the monitored number was not the number that gated the decision,
+            # and a prior sweep showed "mean risk identical at every prior"
+            # because the column could not see it. Sixth instance of the same
+            # omission; the argument is keyword-only and defaults to None, which
+            # is why every one of them was silent.
             if not result.emergency and len(traj):
                 self.risk_pred.append(float(risk_model.evaluate(
-                    traj, scene.agents, dt=cfg.dt).total))
+                    traj, scene.agents, dt=cfg.dt,
+                    freespace=scene.freespace).total))
             else:
                 self.risk_pred.append(None)
 
@@ -974,7 +985,16 @@ class FlashOccWorldModel(GTWorldModel):
     """
 
     def __init__(self, *args, occ_cache=None, veto_unknown: bool = True,
+                 occlusion: str = 'raycast', memory_frames: int = 10,
                  **kwargs) -> None:
+        """`occlusion` selects how `unknown` is defined.
+
+        'raycast'  -- the geometric shadow, recomputed per frame and carrying no
+                      memory. Kept so the comparison is reproducible.
+        'temporal' -- cells not observed within `memory_frames`, accumulated in
+                      the world frame, so unknown shrinks as the ego drives.
+        'none'     -- no unknown at all.
+        """
         super().__init__(*args, **kwargs)
         from pathlib import Path as _P
         from .freespace import FreeSpaceExtractor, GridConfig
@@ -988,10 +1008,18 @@ class FlashOccWorldModel(GTWorldModel):
         # would have shifted every voxel by 10 m in y with no error at all.
         occ_grid = GridConfig(x=(-40.0, 40.0, 0.4), y=(-40.0, 40.0, 0.4),
                               z=(-1.0, 5.4, 0.4))
-        self.occ = FlashOccFreeSpaceAdapter(cache, occ_grid,
-                                            FreeSpaceExtractor(occ_grid),
-                                            veto_unknown=veto_unknown)
+        self.occ = FlashOccFreeSpaceAdapter(
+            cache, occ_grid, FreeSpaceExtractor(occ_grid),
+            occlusion=(occlusion == 'raycast'), veto_unknown=veto_unknown)
         self.occ_missing = 0
+        self.occlusion = str(occlusion)
+        self.memory: TemporalOcclusionMemory | None = None
+        if occlusion == 'temporal':
+            r = np.asarray(self._route, float)
+            self.memory = TemporalOcclusionMemory(
+                bounds=((float(r[:, 0].min()), float(r[:, 0].max())),
+                        (float(r[:, 1].min()), float(r[:, 1].max()))),
+                res=0.4, horizon_frames=memory_frames)
 
     def freespace_at(self, t: float, ego_xy, ego_yaw):
         fr = self._frame(t)
@@ -999,4 +1027,18 @@ class FlashOccWorldModel(GTWorldModel):
         if fs is None:
             self.occ_missing += 1
             return super().freespace_at(t, ego_xy, ego_yaw)
+        if self.memory is not None:
+            # Observation is stamped at the LOGGED pose, because that is where
+            # the occupancy was inferred from -- crediting the simulated ego
+            # with seeing from a pose it occupies but the sensor never did would
+            # manufacture observations, the same error the adapter's docstring
+            # warns about for boxes.
+            k = int(np.clip(round(t / self.dt), 0, len(self.samples) - 1))
+            self.memory.observe(fs.obstacle, fs.origin, fs.res,
+                                fr['xy'], fr['yaw'], frame=k)
+            fs.unknown = self.memory.unknown_ego(
+                fs.obstacle.shape, fs.origin, fs.res, fr['xy'], fr['yaw'],
+                frame=k)
+            if self.occ.veto_unknown:
+                fs.traversable = fs.traversable & ~fs.unknown
         return fs

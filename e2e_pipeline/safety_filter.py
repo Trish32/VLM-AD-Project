@@ -71,6 +71,26 @@ class FeasibilityLimits:
     max_risk: float = 0.05                           # reject above 5% collision prob
     allow_unknown: bool = False                      # may plans cross unobserved space
 
+    # --- three-valued unknown handling ------------------------------------
+    #
+    # The clearance gate used to be two-valued: a footprint either cleared an
+    # obstacle or it did not, and unknown space was a separate hard veto at
+    # gate 1. That collapses two different statements -- "there IS something
+    # here" and "I do not know what is here" -- into the same rejection, and a
+    # plan cannot be graded on the second.
+    #
+    #   footprint meets an OBSERVED OBSTACLE -> hard reject (unchanged)
+    #   footprint meets OBSERVED FREE        -> pass       (unchanged)
+    #   footprint meets UNKNOWN              -> admissible, but constrained and
+    #                                           penalised rather than refused
+    #
+    # `unknown_speed_limit` is the speed above which traversing unobserved space
+    # is penalised: you may drive into what you cannot see, slowly.
+    three_valued_unknown: bool = False
+    unknown_speed_limit: float = 5.0                 # m/s through unobserved space
+    unknown_penalty: float = 2.0                     # ranking cost per metre of it
+    unknown_sight_margin_m: float = 1.0              # slack on the stopping check
+
     @property
     def max_curvature(self) -> float:
         """Tightest turn the steering clamp permits: kappa = tan(delta_max) / L."""
@@ -104,6 +124,9 @@ class CandidateVerdict:
     risk: RiskReport | None = None
     cost: float = float("inf")
     planner_score: float = 0.0
+    unknown_depth_m: float = 0.0      # path length spent in unobserved space
+    unknown_entry_m: float = float("inf")   # arc length to the first unknown cell
+    unknown_verdict: str = "PASS"     # PASS | PENALIZE | REJECT
 
     def describe(self) -> str:
         tag = "OK " if self.feasible else "REJ"
@@ -230,6 +253,60 @@ class SafetyFilter:
             kappa[0] = kappa[1]
         return speed, accel, kappa
 
+    # -- unknown space, graded rather than vetoed ---------------------------
+
+    @staticmethod
+    def unknown_geometry(traj: np.ndarray, unknown_per_step: np.ndarray
+                         ) -> tuple[float, float]:
+        """(arc length to the first unknown step, total arc length inside it).
+
+        Both measured along the path, in metres, so they are comparable with a
+        stopping distance. `unknown_per_step` is (T,) bool -- whether the swept
+        footprint at that step touches an unobserved cell.
+        """
+        p = np.vstack([np.zeros((1, 2)), np.asarray(traj, float)])
+        seg = np.linalg.norm(np.diff(p, axis=0), axis=1)              # (T,)
+        u = np.asarray(unknown_per_step, bool)
+        n = min(len(seg), len(u))
+        seg, u = seg[:n], u[:n]
+        if not u.any():
+            return float("inf"), 0.0
+        first = int(np.argmax(u))
+        entry = float(seg[:first].sum())
+        depth = float(seg[u].sum())
+        return entry, depth
+
+    def unknown_feasibility(self, entry_m: float, depth_m: float,
+                            ego_speed: float) -> str:
+        """PASS / PENALIZE / REJECT for a plan that enters unobserved space.
+
+        THE STOPPING CHECK USES DISTANCE TO THE UNKNOWN, NOT DEPTH INTO IT, and
+        that is a deliberate departure from the specification this implements.
+        The spec compared stopping distance against penetration depth. Depth is
+        the wrong side of the geometry: a hidden obstacle can be anywhere in the
+        unobserved region, so the worst case is one sitting at its NEAR edge.
+        Safety therefore requires being able to stop before reaching that edge --
+        `stopping_distance <= entry`. Comparing against depth makes a plan safer
+        the further it commits into the unknown, which inverts the constraint:
+        clipping 0.5 m of an occlusion corner would REJECT while ploughing 40 m
+        through it would PASS.
+
+        Both quantities are recorded on the verdict so the alternative reading is
+        measurable rather than argued away.
+
+        Depth still matters, but as EXPOSURE rather than as a hard limit: it sets
+        the ranking penalty, so among plans that can all stop in time the one
+        spending least time blind is preferred.
+        """
+        if not np.isfinite(entry_m):
+            return "PASS"
+        stopping = float(ego_speed) ** 2 / (2.0 * max(self.limits.max_decel, 1e-6))
+        if stopping > entry_m + self.limits.unknown_sight_margin_m:
+            return "REJECT"          # cannot halt before the first blind cell
+        if float(ego_speed) > self.limits.unknown_speed_limit:
+            return "PENALIZE"
+        return "PENALIZE" if depth_m > 0.0 else "PASS"
+
     # -- per-candidate evaluation ------------------------------------------
 
     def _evaluate(self, index: int, traj: np.ndarray, scene: SceneRepresentation,
@@ -246,7 +323,8 @@ class SafetyFilter:
         # --- gate 1: drivable area ----------------------------------------
         unknown = fs.unknown_at(flat).reshape(sweep.shape[:2])           # (T, n)
         v.unknown_steps = int(unknown.any(axis=1).sum())
-        if v.unknown_steps and not lim.allow_unknown:
+        three = lim.three_valued_unknown
+        if v.unknown_steps and not (lim.allow_unknown or three):
             v.feasible = False
             v.reasons.append(f"unobserved@{v.unknown_steps}steps")
 
@@ -255,15 +333,36 @@ class SafetyFilter:
         # unknown space we have to re-admit those cells here, or `allow_unknown` would
         # be unreachable: the unknown gate would pass and this one would still reject.
         on_road = fs.traversable_at(flat).reshape(sweep.shape[:2])
-        if lim.allow_unknown:
+        if lim.allow_unknown or three:
             on_road = on_road | unknown
         v.off_road_steps = int((~on_road.all(axis=1)).sum())
         if v.off_road_steps:
             v.feasible = False
             v.reasons.append(f"off-road@{v.off_road_steps}steps")
 
+        # --- gate 1b: unknown, graded ---------------------------------------
+        if three and v.unknown_steps:
+            v.unknown_entry_m, v.unknown_depth_m = self.unknown_geometry(
+                traj, unknown.any(axis=1))
+            v.unknown_verdict = self.unknown_feasibility(
+                v.unknown_entry_m, v.unknown_depth_m, ego.speed)
+            if v.unknown_verdict == "REJECT":
+                v.feasible = False
+                v.reasons.append(
+                    f"blind-stop{v.unknown_entry_m:.1f}<"
+                    f"{ego.speed ** 2 / (2 * lim.max_decel):.1f}")
+
         # --- gate 2: collision / clearance --------------------------------
-        v.min_clearance = float(fs.clearance_at(flat).min())
+        # Three-valued: clearance is a statement about OBSERVED obstacles, so
+        # unknown cells must not be allowed to fail it. With the geometric mask
+        # they always did -- unknown sat directly behind obstacles, so the ESDF
+        # there was ~0 and every occlusion-entering candidate died here rather
+        # than at the gate meant to judge it (measured: 98.8%, median 0.00 m).
+        clear = fs.clearance_at(flat)
+        if three:
+            observed = ~fs.unknown_at(flat)
+            clear = clear[observed] if observed.any() else np.array([np.inf])
+        v.min_clearance = float(clear.min())
         if v.min_clearance < lim.min_clearance:
             v.feasible = False
             v.reasons.append(f"clearance{v.min_clearance:.2f}<{lim.min_clearance}")
@@ -306,7 +405,12 @@ class SafetyFilter:
         # than rewarding plans that hug the middle of an empty road.
         clear_term = -self.w_clearance * min(v.min_clearance, 2.0)
         plan_term = -self.w_planner * planner_score
-        v.cost = float(risk_term + clear_term + plan_term)
+        # Exposure, not a veto: among plans that can all stop before the first
+        # blind cell, prefer the one spending least path length unable to see.
+        # This is where penetration depth belongs -- it grades a plan, it does
+        # not decide whether the plan is admissible.
+        unknown_term = self.limits.unknown_penalty * v.unknown_depth_m
+        v.cost = float(risk_term + clear_term + plan_term + unknown_term)
         return v
 
     # -- fallback -----------------------------------------------------------

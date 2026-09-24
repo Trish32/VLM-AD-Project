@@ -76,7 +76,11 @@ def term_spread(nusc, n_scenes=5, wired=True):
                 ego=EgoState(speed=w.initial_speed(), length=cfg.ego_length,
                              width=cfg.ego_width, wheelbase=cfg.wheelbase),
                 timestamp=t)
-            cands, scores = planner(scene, 2)
+            # Derived per step. Passing 2 here would re-measure the collapsed
+            # candidate set -- command 2's six anchors span 0.5 m laterally, so
+            # "the terms do not spread" would be a restatement of the hardcode
+            # rather than a finding about the critic.
+            cands, scores = planner(scene, w.command_at(t))
             if cands is None or len(cands) < 2:
                 continue
             ranked = plan_with_world_model(cands, scene,
@@ -135,7 +139,7 @@ def main():
                     latent_model=ReactiveWorldModel(),
                     critic=AnalyticCritic(dt=cfg.dt, tracker=tracker,
                                           calibrator=r_cal))
-                _, m = r.run(command=2)
+                _, m = r.run(command=None)
                 risks += [x for x in r.risk_pred if x is not None]
                 if m['route'].get('completion') is not None:
                     comps.append(m['route']['completion'])
