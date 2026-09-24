@@ -142,6 +142,7 @@ class LoopConfig:
     use_structured: bool = False     # TTC-response gate on the structured view
     calibrate_risk: bool = False     # Platt-map the risk model's output
     risk_budget: float = 0.0         # >0: solve speed scale for this budget
+    follow_logged_ego: bool = False  # pin the ego to the logged trajectory
     rollout_steps: int = 0           # 0 = use the full candidate horizon
     world_model_keep: int = 3        # candidates surviving the rollout prune
 
@@ -239,6 +240,36 @@ class ClosedLoopRunner:
 
         for k in range(n_steps):
             t = k * cfg.dt
+            # Pin the ego to the logged pose before reading state, so
+            # perception sees the scene from the viewpoint its detections were
+            # actually computed at.
+            #
+            # WHY THIS MODE EXISTS. Replacing the GT oracle with live detections
+            # confounded two effects: the detector's own error, and a 7.7 m mean
+            # divergence between the simulated and logged ego. Detections are
+            # computed once, from the logged pose, so an object near the
+            # simulated ego but occluded from the logged one is simply absent --
+            # a field-of-view mismatch, not a coordinate error, and unfixable
+            # without sensor data from a pose the car never occupied.
+            #
+            # Pinning the ego to the log drives that divergence to zero. The
+            # planner, filter and metrics all still run; only the ego's realised
+            # motion is taken from the recording. So a GT-vs-live difference
+            # measured in this mode is DETECTOR ERROR ALONE.
+            #
+            # The cost is that it is no longer a closed loop: the planner's
+            # output does not affect where the ego goes, so route completion
+            # becomes trivially the logged route and collision counts describe
+            # the human's trajectory rather than the planner's. Safety and
+            # clearance remain meaningful because they are evaluated against the
+            # agents the pipeline actually perceived.
+            if cfg.follow_logged_ego:
+                fr = self.world._frame(t) if hasattr(self.world, '_frame') else None
+                if fr is not None:
+                    kbm.reset(self._SimEgoState(
+                        x=float(fr['xy'][0]), y=float(fr['xy'][1]),
+                        yaw=float(fr['yaw']), v=float(kbm.state[3])))
+
             x, y, yaw, v = [float(z) for z in kbm.state]
             ego_xy = np.array([x, y])
             lat: dict[str, float] = {}

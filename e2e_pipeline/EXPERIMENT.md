@@ -519,7 +519,8 @@ is attributable to perception alone.
 | live @ score 0.40 | 0 | 23 | 1.16 m | 131 | 35.3% | 1.14 | 16.6 | 7.9 m |
 
 **Perception costs 3.7× the collisions** (7 → 26), 8.8 points of completion, and
-0.46 m of clearance. Ego-fault stays at 0 — real perception does not make the
+0.46 m of clearance. **(Superseded by §19: at zero divergence the collision cost
+is zero, and the real cost is 64% more emergency braking.)** Ego-fault stays at 0 — real perception does not make the
 planner drive into things; it makes it stop more (105 → 125 brakes) and get
 struck more, which is the mechanism §6 established, now driven by detector error
 rather than a bad threshold.
@@ -593,6 +594,60 @@ ECE in the table (0.013) and is the worst configuration in it — 35 collisions,
 0.83 m clearance, 163 brakes, 20.6% completion. A pipeline braking itself into
 paralysis predicts near-zero risk and is correct, which is exactly why ECE must
 never be read alone.
+
+## 19. Detector replayed at the logged pose — the 3.7× was mostly confound
+
+§17 measured live perception costing 3.7× the collisions, and flagged a 7.7 m
+divergence between the simulated and logged ego as an unquantified confound.
+`LoopConfig.follow_logged_ego` pins the ego to the recorded trajectory, driving
+divergence to zero so the detector sees the scene from the viewpoint its
+detections were actually computed at. Any GT-vs-live gap in that mode is
+**detector error alone**.
+
+| config | ego-fault | other | clearance | brakes | agents/step | divergence |
+|---|---|---|---|---|---|---|
+| GT, simulated ego | 0 | 7 | 1.58 m | 105 | 42.2 | — |
+| LIVE, simulated ego | 0 | **26** | 1.12 m | 125 | 39.5 | 7.68 m |
+| **GT, logged pose** | 0 | **0** | **1.94 m** | **44** | 42.4 | — |
+| **LIVE, logged pose** | 0 | **0** | 1.73 m | 72 | 40.0 | **0.00 m** |
+
+### Every collision in this project came from ego divergence
+
+Pinned to the logged trajectory, collisions fall to **zero under both GT and
+live perception** — 7 → 0 and 26 → 0. Not reduced: eliminated.
+
+The recorded agents drove around a car that followed the logged path. Put the
+ego back on that path and nothing hits it, regardless of how it perceives. So
+the collision counts throughout §§6–18 were measuring **deviation from the
+recording**, not unsafe driving and not detector quality.
+
+### The detector's real cost is braking, not collisions
+
+Isolated at zero divergence, live perception versus GT costs:
+
+| | GT | live | Δ |
+|---|---|---|---|
+| collisions | 0 | 0 | — |
+| clearance | 1.94 m | 1.73 m | −0.21 m |
+| emergency brakes | 44 | 72 | **+64%** |
+
+Detector error makes the pipeline **brake 64% more often** and hold 0.21 m less
+clearance. It does not make it crash. §17's headline — "perception costs 3.7×
+the collisions" — was dominated by viewpoint mismatch and is **withdrawn**.
+
+### And the simulated ego is expensive even with perfect perception
+
+GT simulated (105 brakes) against GT logged-pose (44) is a 2.4× difference with
+*identical* perception. Simulating the ego drifts it into states the planner
+handles badly, and that cost exceeds the detector's.
+
+### What the pinned mode is not
+
+It is not a closed loop for the ego: the planner's output no longer affects
+where the car goes, so route completion is trivially the logged route and is
+omitted from the table. Safety and clearance stay meaningful because they are
+evaluated against the agents the pipeline actually perceived. The mode isolates
+perception; it cannot evaluate planning.
 
 ---
 
