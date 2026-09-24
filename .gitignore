@@ -108,3 +108,6 @@ motionForecasting/QCNet/viz_outputs/qc_*.png
 
 # Scratch BEV payload written per-frame by make_vlm_reasoning.py
 bevfusion_vldrive/*/viz_out/_bev_payload.png
+
+# Regenerable in ~80s via Occupancy/FlashOcc/tools/batch_infer.py
+Occupancy/FlashOcc/occ_outputs/occ_cache.npz
