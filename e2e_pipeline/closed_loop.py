@@ -621,3 +621,85 @@ def diffusiondrive_anchor_planner(anchor_npy: str, dt: float = 0.5,
         intent = DrivingIntent(command='straight', target_speed_mps=v)
         return inner(scene, intent)
     return plan
+
+
+class ReactiveGTWorldModel(GTWorldModel):
+    """Agents that respond to the simulated ego instead of replaying the log.
+
+    THE PROBLEM THIS EXISTS FOR. `GTWorldModel.agents_at` re-reads annotations
+    every step, so agents follow the trajectory they took around the ego that
+    ACTUALLY drove. When the simulated ego does anything else -- brakes, yields,
+    takes a different line -- the recording keeps agents on their original paths
+    and they drive through where the ego now is.
+
+    Measured consequence, across this whole project: every defensive layer looks
+    harmful. The TTC gate raised collisions 35 -> 38 purely by slowing the ego.
+    The verifier fires and averts nothing. The world model lost across three
+    variants. None of those are verdicts on the components -- the metric
+    penalises slowing down because the counterfactual (agents responding to a
+    slower ego) was never recorded.
+
+    This seeds agents from the log at t=0 and then propagates them under IDM
+    response to the simulated ego, so the counterfactual is generated rather than
+    looked up.
+
+    WHAT IT COSTS. Agent motion is no longer ground truth -- it is a model, and a
+    crude one (longitudinal response only, no lateral evasion, no inter-agent
+    interaction). Trajectory realism goes down; causal validity goes up. Use
+    GTWorldModel when you want to score against what really happened, this when
+    you want to ask what WOULD have happened.
+    """
+
+    def __init__(self, *args, reaction=None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        from .world_model import ReactiveWorldModel
+        self._react = reaction or ReactiveWorldModel()
+        self._state: list | None = None       # agents in WORLD frame
+        self._t = -1.0
+
+    def agents_at(self, t: float, ego_xy: np.ndarray, ego_yaw: float) -> list[Agent]:
+        from dataclasses import replace as _replace
+
+        # Seed once from the log, in world frame so ego motion cannot drag them.
+        if self._state is None or t <= self._t:
+            logged = super().agents_at(t, ego_xy, ego_yaw)
+            c, s = np.cos(ego_yaw), np.sin(ego_yaw)
+            R = np.array([[c, -s], [s, c]])           # ego -> world
+            self._state = [_replace(a, xy=(R @ a.xy) + ego_xy, vxy=R @ a.vxy,
+                                    yaw=a.yaw + ego_yaw) for a in logged]
+            self._t = t
+        else:
+            dt = t - self._t
+            self._state = self._advance(self._state, dt, ego_xy, ego_yaw)
+            self._t = t
+
+        c, s = np.cos(-ego_yaw), np.sin(-ego_yaw)
+        R = np.array([[c, -s], [s, c]])               # world -> ego
+        return [_replace(a, xy=R @ (a.xy - ego_xy), vxy=R @ a.vxy,
+                         yaw=a.yaw - ego_yaw) for a in self._state]
+
+    def _advance(self, agents, dt, ego_xy, ego_yaw):
+        """One IDM step in world frame, with the ego as an obstacle."""
+        from dataclasses import replace as _replace
+        from .world_model import (IDM_A_MAX, IDM_B, IDM_S0, IDM_T,
+                                  LANE_HALF_WIDTH)
+        out = []
+        for a in agents:
+            v = np.asarray(a.vxy, dtype=np.float64)
+            speed = float(np.linalg.norm(v))
+            if speed < 0.5:
+                out.append(a)                          # parked stays parked
+                continue
+            fwd = v / speed
+            lat = np.array([-fwd[1], fwd[0]])
+            rel = np.asarray(ego_xy, dtype=np.float64) - np.asarray(a.xy, float)
+            gap, offset = float(rel @ fwd), abs(float(rel @ lat))
+
+            new_speed = speed
+            if gap > 0.0 and offset <= LANE_HALF_WIDTH:
+                s_star = IDM_S0 + max(0.0, speed * IDM_T)
+                decel = IDM_A_MAX * (s_star / max(gap, 0.5)) ** 2
+                new_speed = max(0.0, speed - min(decel, IDM_B * 3.0) * dt)
+            nv = fwd * new_speed
+            out.append(_replace(a, xy=np.asarray(a.xy, float) + nv * dt, vxy=nv))
+        return out
