@@ -41,7 +41,9 @@ import numpy as np
 from .freespace import FreeSpace, FreeSpaceExtractor, GridConfig
 from .metrics import StepRecord, evaluate, format_report
 from .safety_filter import SafetyFilter
-from .verifier import (DEGRADE_NONE, TrajectoryVerifier, compare_to_shadow)
+from .structured import build_structured, structured_gate
+from .verifier import (DEGRADE_NONE, TrajectoryVerifier, compare_to_shadow,
+                       decelerate_along)
 from .world_model import (AnalyticCritic, KinematicWorldModel,
                           plan_with_world_model)
 from .scene import Agent, EgoState, SceneRepresentation
@@ -135,6 +137,7 @@ class LoopConfig:
     use_world_model: bool = False    # rank filter survivors by rollout score
     use_verifier: bool = False       # independent rule check before the controller
     use_shadow: bool = False         # compare against an independent safe plan
+    use_structured: bool = False     # TTC-response gate on the structured view
     rollout_steps: int = 0           # 0 = use the full candidate horizon
 
 
@@ -171,6 +174,8 @@ class ClosedLoopRunner:
         self.verifier_rules: dict = {}
         self.shadow_fired: dict = {}
         self.shadow_excess: list = []
+        self.structured_fired = 0
+        self.structured_reasons: dict = {}
         self.latent_model = latent_model or KinematicWorldModel(
             wheelbase=(config or LoopConfig()).wheelbase)
         self.critic = critic or AnalyticCritic(dt=(config or LoopConfig()).dt)
@@ -267,6 +272,18 @@ class ClosedLoopRunner:
                         self.verifier_rules[vv.rule] = self.verifier_rules.get(vv.rule, 0) + 1
                     traj = np.asarray(vr.trajectory, dtype=np.float64)
                 lat['verifier'] = (time.perf_counter() - t0) * 1000
+            if cfg.use_structured and len(traj):
+                t0 = time.perf_counter()
+                st = build_structured(scene, light=getattr(self, 'light', 'none'))
+                iv = structured_gate(st, traj, v, dt=cfg.dt)
+                if iv:
+                    self.structured_fired += 1
+                    for x in iv:
+                        self.structured_reasons[x.reason] = \
+                            self.structured_reasons.get(x.reason, 0) + 1
+                    traj = decelerate_along(traj, v, cfg.dt)
+                lat['verifier'] += (time.perf_counter() - t0) * 1000
+
             if cfg.use_shadow and len(traj):
                 t0 = time.perf_counter()
                 sr = compare_to_shadow(traj, scene, dt=cfg.dt)

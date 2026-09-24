@@ -124,6 +124,46 @@ def comfortable_stop(v0: float, horizon: int, dt: float,
     return np.asarray(out, dtype=np.float64)
 
 
+def decelerate_along(traj: np.ndarray, v0: float, dt: float,
+                     decel: float = 3.0) -> np.ndarray:
+    """Slow down while KEEPING the planned path's shape.
+
+    `comfortable_stop` drives straight ahead, discarding all lateral intent. That
+    is actively dangerous as a substitute: measured in the closed loop, swapping
+    a steering plan for a straight brake raised collisions 35 -> 37 and cut
+    clearance 1.37 -> 0.95 m, because a plan steering AROUND an obstacle was
+    replaced by one braking INTO it.
+
+    This keeps the geometry and only changes the speed profile along it, so a
+    rejected plan degrades to "the same manoeuvre, slower" rather than to a
+    different manoeuvre. Use `comfortable_stop` only when there is no path worth
+    preserving.
+    """
+    path = np.vstack([[0.0, 0.0], np.asarray(traj, dtype=np.float64)])
+    step = np.linalg.norm(np.diff(path, axis=0), axis=1)
+    total = float(step.sum())
+    if total < 1e-6:
+        return np.asarray(traj, dtype=np.float64)
+
+    cum = np.cumsum(step)
+    want, x, v = [], 0.0, float(v0)
+    for _ in range(len(traj)):
+        v = max(0.0, v - decel * dt)
+        x = min(x + v * dt, total)
+        want.append(x)
+
+    out = np.empty((len(traj), 2))
+    for i, s_ in enumerate(want):
+        j = int(np.searchsorted(cum, s_))
+        if j >= len(step):
+            out[i] = path[-1]
+            continue
+        lo = cum[j - 1] if j else 0.0
+        w = 0.0 if step[j] < 1e-9 else (s_ - lo) / step[j]
+        out[i] = path[j] + w * (path[j + 1] - path[j])
+    return out
+
+
 class TrajectoryVerifier:
     """Independent last-line check on the plan about to be executed."""
 
@@ -274,7 +314,7 @@ class TrajectoryVerifier:
 
         rep = VerificationReport(violations=violations, trajectory=traj)
         if not rep.passed and substitute:
-            rep.trajectory = comfortable_stop(v0, len(traj), self.dt)
+            rep.trajectory = decelerate_along(traj, v0, self.dt)
             rep.substituted = True
         return rep
 
@@ -390,5 +430,5 @@ def compare_to_shadow(traj: np.ndarray, scene: SceneRepresentation,
         # the plan overshot, so it is the natural degraded target.
         rep.trajectory = shadow
     elif action == DEGRADE_PULLOVER:
-        rep.trajectory = comfortable_stop(float(scene.ego.speed), len(traj), dt)
+        rep.trajectory = decelerate_along(traj, float(scene.ego.speed), dt)
     return rep
