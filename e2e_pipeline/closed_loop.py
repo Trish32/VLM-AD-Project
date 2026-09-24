@@ -41,6 +41,7 @@ import numpy as np
 from .freespace import FreeSpace, FreeSpaceExtractor, GridConfig
 from .metrics import StepRecord, evaluate, format_report
 from .safety_filter import SafetyFilter
+from .verifier import (DEGRADE_NONE, TrajectoryVerifier, compare_to_shadow)
 from .world_model import (AnalyticCritic, KinematicWorldModel,
                           plan_with_world_model)
 from .scene import Agent, EgoState, SceneRepresentation
@@ -132,6 +133,8 @@ class LoopConfig:
     initial_speed: float = 5.0
     substeps: int = 10               # KBM Euler sub-steps per dt
     use_world_model: bool = False    # rank filter survivors by rollout score
+    use_verifier: bool = False       # independent rule check before the controller
+    use_shadow: bool = False         # compare against an independent safe plan
     rollout_steps: int = 0           # 0 = use the full candidate horizon
 
 
@@ -163,6 +166,11 @@ class ClosedLoopRunner:
         from kbm import KinematicBicycleModel
 
         self.world = world
+        self.verifier = TrajectoryVerifier(dt=(config or LoopConfig()).dt)
+        self.verifier_fired = 0
+        self.verifier_rules: dict = {}
+        self.shadow_fired: dict = {}
+        self.shadow_excess: list = []
         self.latent_model = latent_model or KinematicWorldModel(
             wheelbase=(config or LoopConfig()).wheelbase)
         self.critic = critic or AnalyticCritic(dt=(config or LoopConfig()).dt)
@@ -245,8 +253,30 @@ class ClosedLoopRunner:
                     result.chosen_index = best.index
                 lat['world_model'] = (time.perf_counter() - t0) * 1000
 
-            t0 = time.perf_counter()
+            # Verification and shadow mode sit between planning and control --
+            # the last things that can change what the actuators receive.
             traj = np.asarray(result.trajectory, dtype=np.float64)
+            lat['verifier'] = 0.0
+            if cfg.use_verifier and len(traj):
+                t0 = time.perf_counter()
+                vr = self.verifier.verify(traj, scene, light=getattr(self, 'light', 'none'),
+                                          decision=getattr(self, 'decision', ''))
+                if not vr.passed:
+                    self.verifier_fired += 1
+                    for vv in vr.violations:
+                        self.verifier_rules[vv.rule] = self.verifier_rules.get(vv.rule, 0) + 1
+                    traj = np.asarray(vr.trajectory, dtype=np.float64)
+                lat['verifier'] = (time.perf_counter() - t0) * 1000
+            if cfg.use_shadow and len(traj):
+                t0 = time.perf_counter()
+                sr = compare_to_shadow(traj, scene, dt=cfg.dt)
+                self.shadow_excess.append(sr.excess_m)
+                if sr.action != DEGRADE_NONE:
+                    self.shadow_fired[sr.action] = self.shadow_fired.get(sr.action, 0) + 1
+                    traj = np.asarray(sr.trajectory, dtype=np.float64)
+                lat['verifier'] += (time.perf_counter() - t0) * 1000
+
+            t0 = time.perf_counter()
             control = ctrl.control(traj, v)
             lat['controller'] = (time.perf_counter() - t0) * 1000
 
