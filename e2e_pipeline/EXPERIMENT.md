@@ -400,6 +400,42 @@ for one responsibility, and the better-placed one already exists.
 Retired rather than deleted — `time_to_collision` is now correct and feeds the
 structured representation, and `enabled=True` reproduces both measurements.
 
+### Why filtering candidates beats decelerating a chosen one
+
+Both mechanisms respond to the same input — a collision probability — so the
+question is only *where in the pipeline* the response belongs. Three reasons it
+belongs before selection, not after.
+
+**1. The action space is K-way before, and 1-D after.** The risk gate sees six
+candidates and removes the unacceptable ones; whatever the planner then prefers
+among the survivors is still a plan it endorsed. A post-selection gate has
+exactly one lever — slow the chosen plan down — because switching to a different
+trajectory *is* re-running selection. Six options collapse to one option with a
+scalar knob.
+
+**2. Shape and speed profile are coupled, and decelerating breaks that.**
+DiffusionDrive's anchors are not paths with a free speed parameter; each is a
+manoeuvre whose geometry assumes a particular speed. Suppose candidate A is fast
+and straight but risky, and candidate B is slower with a lane shift and safe.
+Filtering returns B — a coherent manoeuvre. The post-hoc gate can only produce
+"A, slower", which is a lane-holding geometry executed at a speed it was not
+chosen for. Neither the planner nor the filter ever evaluated that object. §13's
+`decelerate_along` exists precisely because the naive version of this — swapping
+in a straight-line stop — could brake a plan *into* the obstacle it was steering
+around.
+
+**3. Slowing has a side effect that filtering does not.** This is the empirical
+part, and it is the whole story of §6 and §7: in traffic, a decelerating ego
+gets rear-ended. Every collision in this project occurs with the ego
+**stationary**, and a tighter risk budget produces **7× more** of them (§11).
+Filtering avoids risk by choosing differently; decelerating avoids risk by
+becoming an obstacle. One of those has a failure mode and the other does not.
+
+The general form: **a gate that can only subtract speed should sit where it can
+still subtract options instead.** Once a plan has been selected, the only
+remaining authority is braking — which is why the emergency brake is the right
+thing to keep at the end of the pipeline, and a graded response is not.
+
 ---
 
 ## Retractions
