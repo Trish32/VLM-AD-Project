@@ -252,3 +252,20 @@ def test_shadow_slows_for_a_lead_vehicle():
     open_road = shadow_plan(_scene(), horizon=6, dt=0.5)
     blocked = shadow_plan(_scene([_lead(12.0)]), horizon=6, dt=0.5)
     assert blocked[-1, 0] < open_road[-1, 0]
+
+
+def test_shadow_fires_when_the_plan_genuinely_overshoots():
+    """Proof the ladder can trigger, not just that it stays quiet.
+
+    Shadow mode never fired across 10 closed-loop scenes, which alone cannot
+    distinguish "correctly silent" from "wired wrong". This constructs the case
+    it exists for: a plan travelling further than the speed limit allows.
+    """
+    from e2e_pipeline.verifier import (DEGRADE_DECEL, DEGRADE_PULLOVER,
+                                       SPEED_LIMIT_MPS, compare_to_shadow)
+    over = np.stack([[(SPEED_LIMIT_MPS + 8.0) * 0.5 * (t + 1), 0.0]
+                     for t in range(6)])
+    rep = compare_to_shadow(over, _scene(speed=SPEED_LIMIT_MPS + 8.0))
+    assert rep.excess_m > 0
+    assert rep.action in (DEGRADE_DECEL, DEGRADE_PULLOVER)
+    assert rep.trajectory is not rep.shadow or rep.action == DEGRADE_DECEL
