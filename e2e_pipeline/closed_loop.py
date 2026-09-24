@@ -54,6 +54,47 @@ if str(_SIM_DIR) not in sys.path:
 class WorldModel(Protocol):
     """Supplies the scene at a simulated ego pose and time."""
 
+    def _drivable_paths(self):
+        """Drivable-area polygon boundaries for this scene's location, cached.
+
+        Uses the polygons directly rather than `get_map_mask`, whose `patch_angle`
+        rotates the PATCH -- the inverse of rotating the world. That sign produced
+        a silent bug in the visualiser earlier in this project (boxes correctly
+        oriented on a wrongly-rotated road); point-in-polygon has no such trap.
+        """
+        if self._map_paths is not None:
+            return self._map_paths
+        from matplotlib.path import Path as _Path
+        from nuscenes.map_expansion.map_api import NuScenesMap
+        scene = self.nusc.get('scene',
+                              self.nusc.get('sample',
+                                            self.samples[0]['token'])['scene_token'])
+        loc = self.nusc.get('log', scene['log_token'])['location']
+        self._map = NuScenesMap(dataroot=self.nusc.dataroot, map_name=loc)
+        paths = []
+        for rec in self._map.drivable_area:
+            for tok in rec['polygon_tokens']:
+                poly = self._map.extract_polygon(tok)
+                paths.append(_Path(np.asarray(poly.exterior.coords)))
+        self._map_paths = paths
+        return paths
+
+    def _map_drivable(self, gx, gy, ego_xy, ego_yaw):
+        """Ego-frame cell centres -> on-drivable-area mask, via the real map."""
+        c, s = np.cos(ego_yaw), np.sin(ego_yaw)
+        wx = ego_xy[0] + c * gx - s * gy          # ego -> global
+        wy = ego_xy[1] + s * gx + c * gy
+        pts = np.column_stack([wx.ravel(), wy.ravel()])
+        out = np.zeros(len(pts), dtype=bool)
+        for path in self._drivable_paths():
+            lo, hi = path.vertices.min(0), path.vertices.max(0)
+            box = ((pts[:, 0] >= lo[0]) & (pts[:, 0] <= hi[0]) &
+                   (pts[:, 1] >= lo[1]) & (pts[:, 1] <= hi[1]))
+            if not box.any():
+                continue                      # bbox reject before the costly test
+            out[box] |= path.contains_points(pts[box])
+        return out.reshape(gx.shape)
+
     def agents_at(self, t: float, ego_xy: np.ndarray, ego_yaw: float) -> list[Agent]:
         """Agents in EGO frame at simulation time `t`."""
 
@@ -251,7 +292,8 @@ class GTWorldModel:
 
     def __init__(self, nusc, scene_idx: int, grid: GridConfig | None = None,
                  road_half_width: float = 10.0,
-                 noise: float = 0.0, rng_seed: int = 0) -> None:
+                 noise: float = 0.0, rng_seed: int = 0,
+                 use_map: bool = False) -> None:
         from nuscenes.eval.detection.utils import category_to_detection_name
         from pyquaternion import Quaternion
 
@@ -263,6 +305,14 @@ class GTWorldModel:
                                        z=(-1.0, 5.4, 0.4))
         self.extractor = FreeSpaceExtractor(self.grid)
         self.road_half_width = road_half_width
+        # Real drivable area instead of a band around the logged path. The band
+        # keeps this module map-expansion-free, but it left 71.5% of closed-loop
+        # steps with no admissible candidate at all -- the anchors project ~46 m
+        # forward at 15 m/s and a 10 m corridor around a curving route cannot
+        # contain that. See RESULT.md, "why the harness is the binding constraint".
+        self.use_map = bool(use_map)
+        self._map = None
+        self._map_paths = None
         self.noise = float(noise)
         self.rng = np.random.default_rng(rng_seed)
 
@@ -342,6 +392,47 @@ class GTWorldModel:
     def _frame(self, t: float) -> dict:
         return self.samples[int(np.clip(round(t / self.dt), 0, len(self.samples) - 1))]
 
+    def _drivable_paths(self):
+        """Drivable-area polygon boundaries for this scene's location, cached.
+
+        Uses the polygons directly rather than `get_map_mask`, whose `patch_angle`
+        rotates the PATCH -- the inverse of rotating the world. That sign produced
+        a silent bug in the visualiser earlier in this project (boxes correctly
+        oriented on a wrongly-rotated road); point-in-polygon has no such trap.
+        """
+        if self._map_paths is not None:
+            return self._map_paths
+        from matplotlib.path import Path as _Path
+        from nuscenes.map_expansion.map_api import NuScenesMap
+        scene = self.nusc.get('scene',
+                              self.nusc.get('sample',
+                                            self.samples[0]['token'])['scene_token'])
+        loc = self.nusc.get('log', scene['log_token'])['location']
+        self._map = NuScenesMap(dataroot=self.nusc.dataroot, map_name=loc)
+        paths = []
+        for rec in self._map.drivable_area:
+            for tok in rec['polygon_tokens']:
+                poly = self._map.extract_polygon(tok)
+                paths.append(_Path(np.asarray(poly.exterior.coords)))
+        self._map_paths = paths
+        return paths
+
+    def _map_drivable(self, gx, gy, ego_xy, ego_yaw):
+        """Ego-frame cell centres -> on-drivable-area mask, via the real map."""
+        c, s = np.cos(ego_yaw), np.sin(ego_yaw)
+        wx = ego_xy[0] + c * gx - s * gy          # ego -> global
+        wy = ego_xy[1] + s * gx + c * gy
+        pts = np.column_stack([wx.ravel(), wy.ravel()])
+        out = np.zeros(len(pts), dtype=bool)
+        for path in self._drivable_paths():
+            lo, hi = path.vertices.min(0), path.vertices.max(0)
+            box = ((pts[:, 0] >= lo[0]) & (pts[:, 0] <= hi[0]) &
+                   (pts[:, 1] >= lo[1]) & (pts[:, 1] <= hi[1]))
+            if not box.any():
+                continue                      # bbox reject before the costly test
+            out[box] |= path.contains_points(pts[box])
+        return out.reshape(gx.shape)
+
     def agents_at(self, t: float, ego_xy: np.ndarray, ego_yaw: float) -> list[Agent]:
         fr = self._frame(t)
         c, s = np.cos(-ego_yaw), np.sin(-ego_yaw)
@@ -403,7 +494,9 @@ class GTWorldModel:
             tt = np.clip(((gx - a[0]) * d[0] + (gy - a[1]) * d[1]) / L2, 0.0, 1.0)
             dist = np.minimum(dist, np.hypot(gx - (a[0] + tt * d[0]),
                                              gy - (a[1] + tt * d[1])))
-        sem[dist <= self.road_half_width, k_ground] = 11        # driveable_surface
+        on_road = (self._map_drivable(gx, gy, ego_xy, ego_yaw) if self.use_map
+                   else dist <= self.road_half_width)
+        sem[on_road, k_ground] = 11                             # driveable_surface
 
         for a in self.agents_at(t, ego_xy, ego_yaw):
             cx = int((a.xy[0] - self.grid.x[0]) / self.grid.x[2])

@@ -386,6 +386,56 @@ So the ceiling here is not the critic's design. It is that the GT corridor is a
 fix a pipeline that spends most of its time with nothing to rank. That is the
 finding, and it is a harness result rather than a planning result.
 
+### Testing the harness hypothesis -- and refuting it
+
+The section above concluded the corridor was the binding constraint and
+predicted that real drivable area would unblock the pipeline. `GTWorldModel`
+now takes `use_map=True`, replacing the 10 m band with nuScenes drivable-area
+polygons (point-in-polygon rather than `get_map_mask`, whose `patch_angle`
+rotates the patch and silently rotated the world in this repo once already).
+
+It works: drivable coverage goes from 15.3% of cells to **40.5%**, 2.6x, and
+both the ego's own cell and 40 m straight ahead test drivable under either
+setting, so the transform is right.
+
+**It changes essentially nothing.**
+
+| corridor | world model | brakes | collisions | completion | min-clear |
+|---|---|---|---|---|---|
+| 10 m band | off | 143/200 | 35 | 27.6% | 1.37 m |
+| 10 m band | on | 149/200 | 39 | 26.1% | 0.92 m |
+| **real map** | off | 142/200 | 35 | 27.5% | 1.35 m |
+| **real map** | on | 149/200 | 36 | 25.9% | 0.95 m |
+
+Rejection reasons are unchanged to within noise:
+
+    10 m band:  off-road 443 (20%)  clearance0.00 414 (19%)  feasible 268 (12%)  risk1.0 192 (9%)
+    real map:   off-road 437 (20%)  clearance0.00 416 (19%)  feasible 271 (12%)  risk1.0 192 (9%)
+
+So the prediction was wrong, and the "harness is the binding constraint"
+conclusion is withdrawn. 2.6x the drivable area buys one fewer emergency brake
+out of 200.
+
+### What the rejection profile actually says
+
+Off-road is 20% of verdicts; agent proximity is **28%** (`clearance0.00` 19% +
+`risk1.000` 9%). Geometry was never the majority. The candidates conflict with
+other road users, and widening the road does not move a vehicle out of the way.
+
+The likeliest cause is the candidate set itself. These are six fixed k-means
+anchors, rescaled to a target speed and otherwise identical from frame to frame:
+same shapes, same arc length (45.96 m at 15 m/s), no dependence on what is
+actually in the scene. In dense traffic most of six fixed shapes will intersect
+something no matter how much road there is. That is the DiffusionDrive
+denoiser's absence showing up as a closed-loop symptom -- the denoiser is what
+makes anchors scene-appropriate, and without it the planner proposes the same
+six manoeuvres into every situation.
+
+Which also explains the world model's failure more convincingly than the
+corridor did: a critic cannot rank its way out of a candidate set that contains
+nothing good. Better ranking over six fixed shapes is the wrong lever; the lever
+is generating candidates that respond to the scene.
+
 ### What would make it worth revisiting
 
 A critic with information the filter does not have -- a learned value function,
