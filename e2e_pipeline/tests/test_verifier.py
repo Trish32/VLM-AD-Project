@@ -269,3 +269,33 @@ def test_shadow_fires_when_the_plan_genuinely_overshoots():
     assert rep.excess_m > 0
     assert rep.action in (DEGRADE_DECEL, DEGRADE_PULLOVER)
     assert rep.trajectory is not rep.shadow or rep.action == DEGRADE_DECEL
+
+
+# --- collision fault attribution --------------------------------------------
+
+
+class _Rec:
+    def __init__(self, v, yaw=0.0):
+        self.ego_xy = np.zeros(2)
+        self.ego_yaw = float(yaw)
+        self.ego_v = float(v)
+
+
+@pytest.mark.parametrize('name,v,pos,expect', [
+    ('moving into a car ahead',        10.0, (8.0, 0.0),  True),
+    ('struck from directly behind',    10.0, (-8.0, 0.0), False),
+    ('moving into a car at 90 deg',    10.0, (0.0, 8.0),  True),
+    ('stationary, struck from ahead',   0.0, (8.0, 0.0),  False),
+    ('stationary, struck from behind',  0.0, (-8.0, 0.0), False),
+    ('crawling below threshold',        0.4, (8.0, 0.0),  False),
+])
+def test_fault_attribution_known_cases(name, v, pos, expect):
+    """Pinned because this rule reports 0 for one of its two categories.
+
+    A metric that never produces one of its outcomes is indistinguishable from a
+    broken one until the cases are enumerated. Measured on real rollouts: all 30
+    contacts occur with the ego stationary, so 0 ego-fault is the rule behaving
+    correctly, not failing to fire.
+    """
+    from e2e_pipeline.metrics import _ego_at_fault
+    assert _ego_at_fault(_Rec(v), (np.array(pos),)) is expect
