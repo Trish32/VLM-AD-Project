@@ -204,7 +204,16 @@ class ClosedLoopRunner:
             # deliver, rather than assuming detector-grade error everywhere.
             pos_s, vel_s = (world.measurement_noise()
                             if hasattr(world, 'measurement_noise') else (0.5, 1.0))
-            tracker = TrackCovarianceTracker(pos_noise=pos_s, vel_noise=vel_s)
+            # The calibrated curve was fitted to BEVFormer detections and
+            # carries their scale, INCLUDING a 0.6 m floor at score 1.0.
+            # Applying it to the GT oracle would hand annotations a detector's
+            # error, and leaving it off for live detections would keep tracking
+            # them at the oracle's 0.1 m. The world is the only object that
+            # knows which it is, so it declares it -- same argument as
+            # `measurement_noise` itself.
+            tracker = TrackCovarianceTracker(
+                pos_noise=pos_s, vel_noise=vel_s,
+                calibrated_noise=bool(getattr(world, 'detector_grade', False)))
         self.tracker = tracker
         self._KBM = KinematicBicycleModel
         self._SimEgoState = SimEgoState
@@ -479,7 +488,13 @@ class GTWorldModel:
     isolates the planning stack, which is what these metrics are for. Perception
     error can be layered back in afterwards (see `noise` below) to measure how
     much of the planning margin it consumes.
+
+    `detector_grade = False`: these are annotations, so the tracker must use the
+    declared `measurement_noise`, not the curve fitted to BEVFormer output.
+    Subclasses that swap in real detections override it.
     """
+
+    detector_grade = False
 
     def __init__(self, nusc, scene_idx: int, grid: GridConfig | None = None,
                  road_half_width: float = 10.0,
@@ -854,13 +869,19 @@ class LivePerceptionWorldModel(GTWorldModel):
     is the one with saved output covering all ten scenes.
     """
 
+    #: these boxes ARE the detections the covariance curve was fitted to, so the
+    #: tracker should use it. Inherited `measurement_noise` declares the
+    #: oracle's 0.1 m, which was wrong here and silently applied until measured.
+    detector_grade = True
+
     def __init__(self, *args, detections=None, score_thr: float = 0.25,
-                 **kwargs) -> None:
+                 associate: bool = True, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         from .live_adapter import DATA, LiveDetectionAdapter, load_detections
         det = detections if detections is not None else load_detections(
             DATA / 'results_mini_train.json', DATA / 'results_mini_val.json')
-        self.adapter = LiveDetectionAdapter(self.nusc, det, score_thr=score_thr)
+        self.adapter = LiveDetectionAdapter(self.nusc, det, score_thr=score_thr,
+                                            associate=associate)
         self.divergence: list = []
 
     def agents_at(self, t: float, ego_xy: np.ndarray, ego_yaw: float) -> list[Agent]:

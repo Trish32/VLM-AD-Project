@@ -56,13 +56,36 @@ class LiveDetectionAdapter:
     measurement.
     """
 
+    #: gate for nearest-neighbour association, metres. Generous relative to the
+    #: 0.5 s step because the measured position error is itself 1.0-2.2 m.
+    ASSOC_GATE_M = 3.0
+
     def __init__(self, nusc, detections: dict, score_thr: float = 0.25,
-                 max_range: float = 60.0) -> None:
+                 max_range: float = 60.0, associate: bool = True) -> None:
         self.nusc = nusc
         self.det = detections
         self.score_thr = float(score_thr)
         self.max_range = float(max_range)
         self.missing = 0            # tokens with no detector output
+        # WHY THIS EXISTS. The fallback id was a hash of (token, rounded xy),
+        # and the token in that tuple made every id unique to its frame --
+        # measured 0.0% of ids carried to the next frame, against 97.1% under
+        # GT. So the Kalman filter never ran a second update on any agent: every
+        # covariance stayed at its seed R(score) forever, and anything needing
+        # an agent's history (the residual fit, any id-switch count) had an
+        # empty input rather than a poor one. The comment beside that hash
+        # warned against exactly the behaviour it caused.
+        #
+        # These detections carry no tracking_id, so association has to be done
+        # here. Greedy nearest-neighbour against the previous frame, constant-
+        # velocity predicted, gated and class-constrained. That is a weak
+        # tracker and is not claimed otherwise -- but it is the difference
+        # between a filter that filters and one that does not.
+        self.associate = bool(associate)
+        self._tracks: dict[int, dict] = {}     # tid -> {xy, vxy, class}
+        self._token_ids: dict[str, list] = {}  # token -> [tid per kept box]
+        self._next_tid = 1
+        self.switches = 0
 
     def agents_at(self, token: str, ego_xy: np.ndarray, ego_yaw: float
                   ) -> list[Agent]:
@@ -74,33 +97,90 @@ class LiveDetectionAdapter:
 
         c, s = np.cos(-ego_yaw), np.sin(-ego_yaw)
         R = np.array([[c, -s], [s, c]])           # world -> ego
-        out = []
+
+        kept = []                                  # world-frame, pre-id
         for b in boxes:
             if float(b.get('detection_score', 1.0)) < self.score_thr:
                 continue
-            p = R @ (np.asarray(b['translation'][:2], dtype=np.float64) - ego_xy)
+            world = np.asarray(b['translation'][:2], dtype=np.float64)
+            p = R @ (world - ego_xy)
             if np.linalg.norm(p) > self.max_range:
                 continue
             v = np.asarray(list(b.get('velocity') or (0.0, 0.0)), dtype=np.float64)
             if np.isnan(v).any():
                 v = np.zeros(2)
+            kept.append((b, world, v, p))
+
+        ids = self._ids_for(token, kept)
+
+        out = []
+        for (b, _world, v, p), tid in zip(kept, ids):
             w_, l_, h_ = b['size']
             yaw_w = Quaternion(b['rotation']).yaw_pitch_roll[0]
-            # Track id from the detector's own association where present, else a
-            # stable hash of the box identity -- the Kalman tracker needs
-            # SOMETHING consistent, and a per-frame random id would make every
-            # agent look brand new and reset its covariance every step.
-            tid = b.get('tracking_id') or abs(hash(
-                (token, round(float(b['translation'][0]), 1),
-                 round(float(b['translation'][1]), 1)))) % 100000
-            out.append(Agent(track_id=int(tid) if str(tid).isdigit() else
-                             abs(hash(tid)) % 100000,
+            out.append(Agent(track_id=int(tid),
                              xy=p, yaw=float(yaw_w - ego_yaw),
                              lwh=np.array([l_, w_, h_], dtype=np.float64),
                              vxy=R @ v,
                              score=float(b.get('detection_score', 1.0)),
                              label=0))
         return out
+
+    def _ids_for(self, token: str, kept: list, dt: float = 0.5) -> list:
+        """Stable track ids for this frame's boxes, cached per token.
+
+        Cached because `agents_at` is called repeatedly for the same token (the
+        planner, the metrics and the counterfactual all ask), and association
+        must not depend on how many times it was asked.
+        """
+        if token in self._token_ids:
+            return self._token_ids[token]
+
+        if not self.associate:
+            ids = [b.get('tracking_id') or abs(hash(
+                (token, round(float(w[0]), 1), round(float(w[1]), 1)))) % 100000
+                for b, w, _v, _p in kept]
+            ids = [int(i) if str(i).isdigit() else abs(hash(i)) % 100000
+                   for i in ids]
+            self._token_ids[token] = ids
+            return ids
+
+        # predict every live track forward one step under constant velocity
+        pred = {tid: (t['xy'] + t['vxy'] * dt, t['cls'])
+                for tid, t in self._tracks.items()}
+        taken: set = set()
+        ids: list = [None] * len(kept)
+
+        # greedy, most-confident detection first: a high-score box should get
+        # first claim on a track rather than losing it to a marginal neighbour
+        order = sorted(range(len(kept)),
+                       key=lambda i: -float(kept[i][0].get('detection_score', 0.0)))
+        for i in order:
+            b, world, _v, _p = kept[i]
+            cls = b.get('detection_name')
+            best, bd = None, self.ASSOC_GATE_M
+            for tid, (xy, tcls) in pred.items():
+                if tid in taken or tcls != cls:
+                    continue
+                d = float(np.linalg.norm(xy - world))
+                if d < bd:
+                    best, bd = tid, d
+            if best is None:
+                best = self._next_tid
+                self._next_tid += 1
+            else:
+                taken.add(best)
+            ids[i] = best
+            self._tracks[best] = {'xy': world,
+                                  'vxy': np.asarray(kept[i][2], float),
+                                  'cls': cls}
+
+        # drop tracks not seen this frame, so a stale one cannot claim a box
+        # several seconds later at a position it drifted to
+        for tid in [t for t in self._tracks if t not in ids]:
+            del self._tracks[tid]
+
+        self._token_ids[token] = ids
+        return ids
 
 
 class FlashOccFreeSpaceAdapter:

@@ -141,3 +141,104 @@ def test_calibration_changes_the_risk_scale():
     adj = RiskModel(ego, calibrator=cal).evaluate(traj, [ag]).total
     assert raw > 0, 'fixture should produce non-zero risk'
     assert adj < raw, 'calibration should reduce an over-confident estimate'
+
+
+def test_tracker_noise_model_follows_the_world_not_a_global_default():
+    """A world declaring GT fidelity must not be handed the detector's floor.
+
+    The calibrated curve is fitted to BEVFormer output and carries a 0.6 m floor
+    at score 1.0. Defaulting it on applied that floor to annotations; defaulting
+    it off tracked real detections at the oracle's 0.1 m. `detector_grade` is
+    the world's declaration and this pins that the runner reads it.
+    """
+    r = _runner()
+    assert r.tracker.calibrated_noise is False, 'oracle got detector-grade noise'
+    # the declared measurement_noise must actually reach the filter
+    assert float(np.sqrt(r.tracker._R(1.0)[0, 0])) == pytest.approx(0.1)
+
+    class LiveStub(StubWorld):
+        detector_grade = True
+
+    from e2e_pipeline.closed_loop import ClosedLoopRunner, LoopConfig
+    live = ClosedLoopRunner(LiveStub(), _straight_planner(), LoopConfig())
+    assert live.tracker.calibrated_noise is True
+    assert float(np.sqrt(live.tracker._R(1.0)[0, 0])) > 0.5
+
+
+def test_live_perception_world_declares_detector_grade():
+    """The class whose boxes the curve was fitted to must opt in."""
+    from e2e_pipeline.closed_loop import GTWorldModel, LivePerceptionWorldModel
+    assert LivePerceptionWorldModel.detector_grade is True
+    assert GTWorldModel.detector_grade is False
+
+
+def test_velocity_noise_is_not_scaled_by_detector_score():
+    """Measured: velocity RMS is flat across score bins, so R must be too.
+
+    The first calibrated cut carried the position curve into velocity via
+    sigma_p * vel_noise / pos_noise, which is both unmeasured and -- for a world
+    declaring pos_noise=0.1 -- a twentyfold inflation.
+    """
+    from e2e_pipeline.uncertainty import TrackCovarianceTracker
+    t = TrackCovarianceTracker(calibrated_noise=True, pos_noise=0.1, vel_noise=0.2)
+    assert t._R(0.3)[2, 2] == pytest.approx(t._R(1.0)[2, 2]), \
+        'velocity noise must not depend on score'
+    assert float(np.sqrt(t._R(1.0)[2, 2])) == pytest.approx(
+        TrackCovarianceTracker.MEAS_VEL_MPS)
+
+
+def test_live_track_ids_survive_to_the_next_frame():
+    """The fallback id hashed the frame token, so nothing was ever tracked.
+
+    Measured before the fix: 0.0% of live track ids appeared in the next frame,
+    against 97.1% under GT. Every agent was seeded fresh each step, so the
+    Kalman filter never ran a second update and anything needing an agent's
+    history got an empty input rather than a poor one.
+    """
+    from e2e_pipeline.live_adapter import LiveDetectionAdapter
+
+    def box(x, y, score=0.9, name='car'):
+        return {'translation': [x, y, 0.0], 'size': [1.8, 4.5, 1.6],
+                'rotation': [1.0, 0.0, 0.0, 0.0], 'velocity': [2.0, 0.0],
+                'detection_score': score, 'detection_name': name}
+
+    det = {'t0': [box(10.0, 0.0), box(30.0, 5.0)],
+           't1': [box(11.0, 0.0), box(31.0, 5.0)]}     # each moved 1 m
+    ad = LiveDetectionAdapter(None, det, score_thr=0.25)
+    a = {x.track_id for x in ad.agents_at('t0', np.zeros(2), 0.0)}
+    b = {x.track_id for x in ad.agents_at('t1', np.zeros(2), 0.0)}
+    assert a == b, f'ids did not carry across the frame: {a} vs {b}'
+
+    # and the id must not depend on how many times the frame was asked for
+    again = {x.track_id for x in ad.agents_at('t0', np.zeros(2), 0.0)}
+    assert again == a, 'association is not idempotent per token'
+
+
+def test_association_gate_rejects_an_implausible_jump():
+    """A box 20 m from any track starts a new one rather than stealing an id."""
+    from e2e_pipeline.live_adapter import LiveDetectionAdapter
+
+    def box(x):
+        return {'translation': [x, 0.0, 0.0], 'size': [1.8, 4.5, 1.6],
+                'rotation': [1.0, 0.0, 0.0, 0.0], 'velocity': [0.0, 0.0],
+                'detection_score': 0.9, 'detection_name': 'car'}
+
+    ad = LiveDetectionAdapter(None, {'t0': [box(10.0)], 't1': [box(30.0)]},
+                              score_thr=0.25)
+    a = [x.track_id for x in ad.agents_at('t0', np.zeros(2), 0.0)]
+    b = [x.track_id for x in ad.agents_at('t1', np.zeros(2), 0.0)]
+    assert a != b, 'a 20 m jump was associated through a 3 m gate'
+
+
+def test_critic_risk_can_see_the_tracker_and_calibrator():
+    """Both were hardcoded to None, so the critic scored in model units."""
+    from e2e_pipeline.calibration import PlattCalibrator
+    from e2e_pipeline.uncertainty import TrackCovarianceTracker
+    from e2e_pipeline.world_model import AnalyticCritic
+    plain = AnalyticCritic()
+    assert plain.tracker is None and plain.calibrator is None, \
+        'defaults must not move -- existing results depend on them'
+    wired = AnalyticCritic(tracker=TrackCovarianceTracker(),
+                           calibrator=PlattCalibrator(a=0.457, b=-2.333,
+                                                      fitted=True, n_positive=11))
+    assert wired.tracker is not None and wired.calibrator is not None

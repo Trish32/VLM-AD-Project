@@ -29,14 +29,29 @@ EGO = EgoState(speed=10.0)
 
 
 def test_first_observation_seeds_covariance_from_measurement_noise():
-    """A brand-new track knows exactly as much as its one measurement."""
+    """A brand-new track knows exactly as much as its one measurement.
+
+    Stated as `cov == _R(score)` rather than as literal numbers, because the
+    numbers are now a fitted curve: the contract is that the seed IS the
+    measurement noise, whichever model supplies it. The uncalibrated branch
+    below keeps the original constants reachable.
+    """
     tr = TrackCovarianceTracker(pos_noise=0.5, vel_noise=1.0)
     a = make_agent(score=1.0)
     tr.update([a], timestamp=0.0)
 
     assert a.cov is not None and a.cov.shape == (4, 4)
-    assert a.cov[0, 0] == pytest.approx(0.25)      # pos_noise^2
-    assert a.cov[2, 2] == pytest.approx(1.0)       # vel_noise^2
+    assert a.cov == pytest.approx(tr._R(1.0))
+    # calibrated: a score-1.0 box still carries the measured ~0.6 m floor, so
+    # the seed must be WIDER than the old 0.5 m assumption, not equal to it
+    assert a.cov[0, 0] > 0.25
+
+    old = TrackCovarianceTracker(pos_noise=0.5, vel_noise=1.0,
+                                 calibrated_noise=False)
+    b = make_agent(score=1.0)
+    old.update([b], timestamp=0.0)
+    assert b.cov[0, 0] == pytest.approx(0.25)      # pos_noise^2
+    assert b.cov[2, 2] == pytest.approx(1.0)       # vel_noise^2
 
 
 def test_low_score_detections_widen_the_posterior():

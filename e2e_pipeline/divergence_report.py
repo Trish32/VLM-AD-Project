@@ -17,7 +17,7 @@ from e2e_pipeline.divergence_metrics import (StepObs, bucketed_collision_rate,
                                              recovery_rate)
 from e2e_pipeline.metrics import _agent_poly, _ego_poly, polygon_distance
 from e2e_pipeline.safety_filter import FeasibilityLimits, SafetyFilter
-from e2e_pipeline.uncertainty import RiskModel
+from e2e_pipeline.uncertainty import RiskModel, TrackCovarianceTracker
 from e2e_pipeline.world_model import ReactiveWorldModel
 
 A = 'diffusiondrive_planner/data/kmeans/kmeans_plan_6.npy'
@@ -50,9 +50,23 @@ def gather(nusc, WorldCls):
 
             # counterfactual: same world, two trajectories
             agents = w.agents_at(k * DT, fr['xy'], fr['yaw'])
+            # A FRESH tracker per step, not r.tracker: this is a snapshot
+            # comparison at the logged pose, so the agents want their
+            # measurement covariance cov = R(score), not state carried over
+            # from the diverging rollout.
+            #
+            # Built with no tracker at all until now, which made the metric
+            # fall through to constant_velocity_prediction's hardcoded
+            # (0.5 + 0.5 t)^2 spread. The counterfactual therefore never
+            # consulted the covariance model, and the much-worse tail it
+            # reported was a property of that constant.
+            cf_tracker = TrackCovarianceTracker(
+                calibrated_noise=bool(getattr(w, 'detector_grade', False)),
+                **dict(zip(('pos_noise', 'vel_noise'), w.measurement_noise())))
+            cf_tracker.update(agents, k * DT)
             rm = RiskModel(type(rec).__mro__ and __import__(
                 'e2e_pipeline.scene', fromlist=['EgoState']).EgoState(speed=rec.ego_v),
-                calibrator=r.calibrator)
+                tracker=cf_tracker, calibrator=r.calibrator)
             logged_fut = []
             for h in range(1, 7):
                 j = min(k + h, len(w.samples) - 1)

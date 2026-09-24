@@ -155,12 +155,38 @@ class TrackCovarianceTracker:
     MEAS_FLOOR_M = 0.609
     MEAS_SLOPE_M = 0.466
 
+    # VELOCITY IS NOT PREDICTED BY SCORE, and the first cut assumed it was.
+    # Measured against `box_velocity` over the same 11,730 matches:
+    #
+    #   score bin   0.25-0.40  0.40-0.55  0.55-0.70  0.70-0.85  0.85-1.01
+    #   vel RMS       2.219      2.133      2.867      3.018      1.945   m/s
+    #
+    # The least-squares fit is sigma_v = 2.463 - 0.075 / score: the slope is
+    # NEGATIVE and two orders below the floor, i.e. flat. Confidence in "there
+    # is an object here" says nothing about "and this is how fast it is going",
+    # which is unsurprising once stated -- the score is a classification
+    # logit and velocity comes from a separate regression branch.
+    #
+    # So the score shape is applied to position ONLY. Carrying it into velocity
+    # (as this did, via sigma_p * vel_noise / pos_noise) was an unmeasured
+    # extrapolation that also silently coupled the velocity term to a position
+    # scale the calibrated branch no longer uses -- for a world declaring
+    # pos_noise=0.1 that inflated sigma_v more than twentyfold.
+    MEAS_VEL_MPS = 2.463
+
     def _R(self, score: float) -> np.ndarray:
+        """Measurement covariance for a detection of confidence `score`.
+
+        NOTE under `calibrated_noise` the constructor's `pos_noise`/`vel_noise`
+        are IGNORED -- the curve is fitted to BEVFormer output and carries its
+        own scale. Pass `calibrated_noise=False` for a world whose boxes do not
+        come from that detector (the GT oracle), or its declared fidelity is
+        silently discarded.
+        """
         s = max(float(score), self.score_floor)
         if self.calibrated_noise:
-            sigma_p = self.MEAS_FLOOR_M + self.MEAS_SLOPE_M / s
-            sp = sigma_p ** 2
-            sv = (sigma_p * self.vel_noise / max(self.pos_noise, 1e-6)) ** 2
+            sp = (self.MEAS_FLOOR_M + self.MEAS_SLOPE_M / s) ** 2
+            sv = self.MEAS_VEL_MPS ** 2
         else:
             sp = (self.pos_noise / s) ** 2
             sv = (self.vel_noise / s) ** 2

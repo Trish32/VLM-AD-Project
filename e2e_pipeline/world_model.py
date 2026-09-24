@@ -237,11 +237,19 @@ class AnalyticCritic:
     exact values.
     """
 
-    def __init__(self, dt: float = 0.5) -> None:
+    def __init__(self, dt: float = 0.5, tracker=None, calibrator=None) -> None:
         # RiskModel is bound to an EgoState, so it is built per scene in score()
         # rather than held here -- caching one across scenes would silently
         # evaluate new geometry against a stale ego footprint.
         self.dt = float(dt)
+        # Both default to None, which is the behaviour this always had: the
+        # critic's risk term was computed with no tracker (so the agent
+        # covariance fell through to constant_velocity_prediction's hardcoded
+        # spread) and no calibrator (so it was in model units, ~6x
+        # over-confident). Injectable so that can be measured rather than
+        # assumed; the defaults are unchanged so no existing result moves.
+        self.tracker = tracker
+        self.calibrator = calibrator
 
     def _drivable(self, scene: SceneRepresentation, xy: np.ndarray) -> bool:
         fs = getattr(scene, 'freespace', None)
@@ -275,7 +283,9 @@ class AnalyticCritic:
         # the horizon's uncertainty growth -- evaluating per step and summing
         # would double-count the same encounter across adjacent steps.
         final = states[-1]
-        report = RiskModel(scene.ego).evaluate(path, final.agents, dt=self.dt)
+        report = RiskModel(scene.ego, tracker=self.tracker,
+                           calibrator=self.calibrator).evaluate(
+            path, final.agents, dt=self.dt)
         risk = float(report.expected_collisions)
 
         offroad = 1.0 - np.mean([self._drivable(scene, p) for p in path])

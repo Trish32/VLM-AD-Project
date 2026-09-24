@@ -1059,9 +1059,218 @@ scene.
 
 ---
 
+## 26. The covariance re-measured, and four places it never reached
+
+§25's covariance work fitted `sigma = 0.609 + 0.466 / score` to 11,730 matched
+detections and stopped there. Six follow-ups were run against it. Two produced
+the expected answer; four found that the quantity being calibrated was not
+reaching the thing it was supposed to inform, which made several earlier
+conclusions measurements of plumbing rather than of perception.
+
+### Velocity is not predicted by score, and the first cut assumed it was
+
+The same 11,730 matches, now against `box_velocity`:
+
+| score bin | n | measured position RMS | measured **velocity** RMS |
+|---|---|---|---|
+| 0.25–0.40 | 5860 | 2.036 m | 2.219 m/s |
+| 0.40–0.55 | 1866 | 1.742 m | 2.133 m/s |
+| 0.55–0.70 | 891 | 1.450 m | 2.867 m/s |
+| 0.70–0.85 | 1128 | 1.269 m | 3.018 m/s |
+| 0.85–1.01 | 1985 | 0.987 m | 1.945 m/s |
+
+The least-squares fit is `sigma_v = 2.463 − 0.075 / score` — the slope is
+**negative** and two orders below the floor, i.e. flat. Position error halves
+across the score range; velocity error does not move. Unsurprising once stated:
+the score is a classification logit and velocity comes from a separate
+regression branch.
+
+The first calibrated cut carried the position curve into velocity anyway, via
+`sigma_p * vel_noise / pos_noise`. That was unmeasured, and it also coupled
+velocity to a position scale the calibrated branch no longer uses — for a world
+declaring `pos_noise=0.1` it inflated `sigma_v` more than twentyfold.
+
+### And position is not the term that matters
+
+Propagated variance at a 3 s horizon, averaged over agents:
+
+| term | LIVE | share | GT | share |
+|---|---|---|---|---|
+| position `P_xx` | 3.44 | **5.5%** | 1.16 | **1.9%** |
+| velocity `t² P_vv` | 54.60 | **86.9%** | 54.60 | **90.6%** |
+| process `q t³/3` | 4.78 | 7.6% | 4.52 | 7.5% |
+
+Under the CV model the velocity block is multiplied by `t²` and position by 1,
+so at 3 s velocity dominates by more than an order of magnitude. **The position
+curve — the entire subject of §25's calibration — moves 5.5% of the number.**
+That is the single most useful result here: the careful part was the part that
+could not matter.
+
+### The metric reporting the tail never read the covariance
+
+`divergence_report.py` built its counterfactual `RiskModel` with **no tracker**,
+so `constant_velocity_prediction` fell through to a hardcoded `(0.5 + 0.5 t)²`
+spread. The much-worse tail in §25 was therefore a property of that constant.
+Re-running it unchanged would have produced identical numbers and read as a
+clean null.
+
+Wired, with a fresh tracker per step (`cov = R(score)`, the quantity calibrated):
+
+| covariance arm | mean Δrisk | worse | **much worse** | better |
+|---|---|---|---|---|
+| reciprocal (old) | +0.0069 | 56% | **3%** | 44% |
+| full (measured) | +0.0027 | 56% | **0%** | 44% |
+| slope only (no floor) | +0.0030 | 56% | 0% | 44% |
+| floor only (no slope) | +0.0031 | 56% | 0% | 44% |
+| **σv = 0.2 (as shipped)** | +0.0098 | 55% | **4%** | 44% |
+| **σv = 1.0 (assumed)** | +0.0057 | 56% | **2%** | 44% |
+| **σv = 2.46 (measured)** | +0.0027 | 56% | **0%** | 44% |
+
+The floor does **not** explain the tail, and neither does the slope — the three
+position arms agree to ±0.0004. The velocity arms reproduce it exactly:
+4% → 2% → 0% as `sigma_v` goes 0.2 → 1.0 → 2.46. The tail was the filter being
+over-confident about how fast things were moving.
+
+### Live detections were never tracked at all
+
+The adapter's fallback track id hashed `(token, rounded xy)`. The token in that
+tuple made every id unique to its frame:
+
+| | ids carried to the next frame |
+|---|---|
+| GT annotations | **97.1%** |
+| live detections | **0.0%** |
+
+So the Kalman filter never ran a second update on any agent under live
+perception — every covariance stayed at its seed forever. The comment beside
+that hash warned against exactly the behaviour it caused. Greedy
+nearest-neighbour association (3 m gate, class-constrained, CV-predicted) takes
+it to **65%**.
+
+`LivePerceptionWorldModel` also inherited `GTWorldModel.measurement_noise()`, so
+real detections were declared at the oracle's 0.1 m. Both arms were wrong in
+opposite directions once `calibrated_noise` defaulted on; the world now declares
+`detector_grade` and the runner reads it.
+
+### Where the 22% orphan rate lives
+
+| range | n | orphan | of those, class-confused | **true FP** | mean score | position err |
+|---|---|---|---|---|---|---|
+| 0–10 m | 1446 | 6% | 57% | **3%** | 0.69 | 1.06 m |
+| 10–20 m | 3590 | 9% | 34% | **6%** | 0.60 | 1.38 m |
+| 20–30 m | 4013 | 17% | 24% | 13% | 0.49 | 1.75 m |
+| 30–40 m | 3153 | 30% | 13% | 26% | 0.40 | 2.11 m |
+| 40+ m | 2787 | 44% | 11% | **40%** | 0.34 | 2.23 m |
+
+"22% false positives" is a far-field average. Inside 10 m — where a planner acts
+— the true false-positive rate is **3%**, and most of what remains is a real
+obstacle under the wrong class label rather than a hallucination. The headline
+number and the planning-relevant number differ by 13×.
+
+### Risk gate: 0.10 is now the 90th percentile of realised risk
+
+Pinned to the logged ego, so divergence is not in the measurement:
+
+| max_risk | EGO-fault | brakes | clearance | completion | risk p50 | risk p90 |
+|---|---|---|---|---|---|---|
+| 0.05 | 0 | 147 | 1.73 m | 52.5% | 0.0352 | 0.0459 |
+| **0.10** | 0 | **75** | 1.73 m | 52.5% | 0.0561 | 0.0862 |
+| 0.20 | 0 | **40** | 1.73 m | 52.5% | 0.0662 | 0.1164 |
+| 0.40 | 0 | 40 | 1.73 m | 52.5% | 0.0662 | 0.1164 |
+
+At zero divergence the threshold changes **nothing except how often it brakes** —
+same collisions (zero), same clearance, same completion. 0.10 costs 35 extra
+interventions per 200 steps against 0.20 with no measured benefit.
+
+The covariance fix roughly doubled the risk scale (p50 0.031 → 0.063), so a gate
+that used to sit well above the bulk now sits at about the p90. Free-running,
+the §7 direction reproduces: looser is better on everything — clearance
+0.64 → 1.07 m, completion 17.5% → 36.6%, other-fault collisions 36 → 24.
+
+**Recommendation: 0.20.** Caveat stated plainly — zero collisions in 200 pinned
+steps is weak evidence of *no* safety benefit, not proof of it.
+
+### residual.py: the obstruction was association, not noise
+
+| arm | agents seen | paired across a step | target RMS | rollout Δ |
+|---|---|---|---|---|
+| GT (control) | 16,215 | 15,713 (**97%**) | 0.279 m/s | −0.1% |
+| LIVE, no association | 14,615 | **6 (0%)** | — | — |
+| LIVE, associated | 14,631 | 9,419 (**64%**) | 0.878 m/s | −1.5% |
+
+§22's "cannot be meaningfully re-fitted under live perception" was measuring
+**six training pairs**. With association the data exists, and the fit still does
+nothing — but now for a measured reason rather than an empty input.
+
+The naive noise floor (`√2 × 2.463 = 3.48 m/s`) is 4× larger than the observed
+target RMS, so it is wrong for this subset: the 3 m association gate keeps slow,
+well-localised agents and discards the fast ones carrying the large velocity
+errors. Deriving the noise from the two arms instead — `noise² = live² − gt²` —
+gives **0.833 m/s against a 0.279 m/s signal, SNR 0.33**. The GT control settles
+it: even with the noise removed entirely the residual is not learnable from
+these six features (+0.0% one-step, −0.1% rollout).
+
+### calibrate.py: still inert, and the stated reason was wrong
+
+§22 explained the inertness by claiming all six anchors share an arc length, so
+"`progress`, `offroad` and `clearance` are CONSTANT across candidates and risk is
+the only discriminating term". Measured spread across candidates, per decision:
+
+| critic term | mean spread | max spread | % decisions with spread > 0 |
+|---|---|---|---|
+| progress | 0.0054 | 0.0074 | 100% |
+| **clearance** | **0.6744** | **2.8000** | 77% |
+| offroad | 0.0200 | 0.3333 | 10% |
+| risk (as shipped) | 0.2623 | 1.5437 | 100% |
+| risk (critic wired) | 0.0492 | 0.3348 | 100% |
+
+Clearance is **not** constant — it is the most discriminating term in the
+objective, out-spreading risk 14× once the critic is wired. The real reason the
+price is unidentifiable is that **progress, the numeraire the dual trades
+against, has 125× less spread than clearance**. Dual ascent confirms it:
+progress is 52.1% at every λ from 6.0 to 9.8, and λ rises monotonically because
+the 0.05 budget is infeasible at a realised 0.069 — which is the correct signal,
+not a number to clip.
+
+Wiring the critic's own `RiskModel` (it had **no tracker and no calibrator**,
+a third instance of the same gap) *reduces* risk spread 5.3×, because the Platt
+map compresses. It makes risk even less able to discriminate.
+
+### Occlusion prior: still exactly inert, and now provably geometric
+
+| prior | brakes | clearance | mean risk | map unknown | **waypoints in unknown** |
+|---|---|---|---|---|---|
+| 0.00 | 87 | 0.78 m | 0.0376 | 84.0% | **0.0%** |
+| 0.02 | 87 | 0.78 m | 0.0376 | 84.0% | **0.0%** |
+| 0.05 | 87 | 0.78 m | 0.0376 | 84.0% | **0.0%** |
+| 0.10 | 87 | 0.78 m | 0.0376 | 84.0% | **0.0%** |
+
+**84% of the map is unknown and 0.0% of planned waypoints enter it.** A stress
+arm forcing detector-grade covariance onto the GT world (mean risk 0.0376 →
+0.0581, EGO-fault 1 → 7) is identical across priors too, which rules out the
+prior being swamped rather than idle. The obstruction is geometric and no
+covariance change can touch it — the occlusion is lateral, the six fixed anchors
+run straight down the observed corridor.
+
+### What this round established
+
+Four components were correct and disconnected: the covariance never reached the
+counterfactual metric, the critic, or the live tracker, and the live tracker had
+no tracks to filter. Three earlier conclusions rested on those gaps. The
+recurring shape is the one already noted about the Platt calibration — the most
+carefully measured component is the one nothing consumes — and the fix each time
+was wiring rather than modelling.
+
+The one substantive modelling result is inverted from the expected direction:
+position covariance, measured carefully in §25, governs 5.5% of the propagated
+variance, while velocity — assumed, never measured, and wrong by 12× — governs
+87%.
+
+---
+
 ## Retractions
 
-Five causal explanations were committed and then refuted by their own
+Nine causal explanations were committed and then refuted by their own
 measurements:
 
 1. **"mAP ≈ 0 means perception is broken."** It was a benchmark artefact: three
@@ -1077,9 +1286,28 @@ measurements:
    were a stationary ego.
 5. **"Non-reactive agents are why no defensive layer can show benefit."** Under
    reactive agents the TTC gate still degraded.
+6. **"22% of detections above 0.25 are false positives."** A far-field average.
+   Inside 10 m the true false-positive rate is **3%**, and 57% of the orphans
+   there are a real obstacle under the wrong class label (§26).
+7. **"Live perception costs roughly 1 decision in 10 becoming materially
+   riskier."** §25's much-worse tail was computed by a counterfactual that built
+   its risk model with no tracker, so it never read the covariance at all. Wired,
+   it is **0%** under every position arm (§26).
+8. **"residual.py cannot be meaningfully re-fitted under live perception."**
+   True, but not for the reason implied: the live adapter produced **6 training
+   pairs from 14,615 agents** because track ids were unique per frame. That
+   measured plumbing, not perception (§26).
+9. **"All six anchors share an arc length, so progress, offroad and clearance
+   are constant across candidates and risk is the only discriminating term."**
+   Clearance spreads 0.674 on 77% of decisions — it is the *most* discriminating
+   term, out-spreading risk 14×. The price is unidentifiable because *progress*
+   has 125× less spread than clearance, which is a different claim (§26).
 
-The pattern in all five: a real defect was found, correctly identified as real,
-and then over-credited with the observed symptom.
+The pattern in the first five: a real defect was found, correctly identified as
+real, and then over-credited with the observed symptom. The pattern in 6–9 is
+different and worse — a number was reported from a path that could not have
+produced a different answer, so the null result carried no information. Each was
+caught only by asking what would have to change for the measurement to move.
 
 ## Open
 
@@ -1099,4 +1327,11 @@ PYTHONPATH=. python e2e_pipeline/risk_sweep.py        # §7
 PYTHONPATH=. python e2e_pipeline/rebaseline.py        # §8
 PYTHONPATH=. python e2e_pipeline/fit_calibration.py   # §9
 PYTHONPATH=. python e2e_pipeline/soft_risk_ab.py      # §10
+
+PYTHONPATH=. python e2e_pipeline/covariance_calibration.py      # §26 covariance + orphans
+PYTHONPATH=. python e2e_pipeline/counterfactual_attribution.py  # §26 tail attribution
+PYTHONPATH=. python e2e_pipeline/risk_gate_recheck.py           # §26 max_risk
+PYTHONPATH=. python e2e_pipeline/residual_live_snr.py           # §26 residual SNR
+PYTHONPATH=. python e2e_pipeline/calibrate_rerun.py             # §26 critic spread
+PYTHONPATH=. python e2e_pipeline/occlusion_prior_sweep.py       # §26 occlusion prior
 ```
