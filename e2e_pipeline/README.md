@@ -202,6 +202,9 @@ Four findings the closed loop surfaced, all invisible to unit tests:
 
 Method, ablations, retractions and caveats: **[RESULT.md](RESULT.md)**.
 
+Before/after numbers for every change made to this pipeline, including the ones
+that made it worse: **[EXPERIMENT.md](EXPERIMENT.md)**.
+
 ```bash
 python -m e2e_pipeline.visualize                  # scene-0796, the GIF above
 python -m pytest e2e_pipeline/tests/ -q
