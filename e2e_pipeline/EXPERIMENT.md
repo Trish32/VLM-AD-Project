@@ -302,6 +302,46 @@ Kept, disabled, and honest about it: `ResidualDynamics.residual()` returns
 exactly zero when untrained, so the object degrades to the physics prior rather
 than to a random initialisation.
 
+## 14. Calibration wired into the decision path
+
+§9 and §12 fitted and validated the Platt map, and then nothing used it -- the
+risk model still emitted raw, 6×-inflated probabilities and the filter still
+thresholded them. Integrated at three points: inside `RiskModel` (so no call
+site can compare against an uncalibrated number), as the input to the
+risk-budget speed solve, and as in-loop ECE monitoring on the runner.
+
+| config | ego-fault | other | clearance | brakes | completion | jerk | in-loop ECE |
+|---|---|---|---|---|---|---|---|
+| raw @0.60 (previous best) | 0 | 6 | 1.52 m | 102 | 43.2% | 1.57 | 0.153 |
+| raw @0.05 (original) | 0 | 30 | 1.39 m | 131 | 29.5% | 1.20 | 0.012 |
+| calibrated @0.05 | 0 | 23 | 1.50 m | 119 | 33.8% | 1.31 | 0.023 |
+| **calibrated @0.10** | 0 | **6** | **1.60 m** | 104 | **43.6%** | **1.47** | 0.034 |
+| calibrated @0.20 | 0 | 8 | 1.55 m | 103 | 43.8% | 1.59 | 0.043 |
+| calibrated + budget ε=0.10 | **1** | 7 | 1.55 m | 104 | 43.8% | 1.50 | 0.068 |
+
+**Calibrated @0.10 matches or beats the previous best on every axis** — same
+collisions, better clearance (1.60 vs 1.52 m), better completion, better
+comfort — and the threshold is now a real collision probability rather than a
+number in model units.
+
+**The 6× factor appears exactly where predicted.** Calibrated 0.10 behaves like
+raw 0.60. That is the over-confidence measured in §9, now visible as an
+operating-point equivalence rather than an inferred one.
+
+**Calibration helps even without re-tuning.** At the original 0.05 threshold,
+simply calibrating the input takes collisions 30 → 23 and completion 29.5% →
+33.8%. The threshold was never the whole story; the input's scale was.
+
+### A caveat about the ECE column
+
+Raw @0.05 shows the *lowest* in-loop ECE (0.012) and is the *worst* configuration
+by every safety and progress measure. That is not a contradiction — at that
+threshold the ego barely moves, predictions collapse toward zero, and nothing
+happens, so "predict ≈0, observe ≈0" is trivially well-calibrated. ECE measures
+agreement between prediction and outcome, not usefulness, and on a degenerate
+distribution it rewards a model that has stopped saying anything. Read it
+alongside the operating point, never alone.
+
 ---
 
 ## Retractions

@@ -306,10 +306,25 @@ class RiskModel:
     def __init__(self,
                  ego: EgoState,
                  tracker: TrackCovarianceTracker | None = None,
-                 inflate_m: float = 0.0) -> None:
+                 inflate_m: float = 0.0,
+                 calibrator=None) -> None:
+        """`calibrator` maps the raw probability onto observed frequencies.
+
+        Without it this returns a MODEL's probability, measured over 966 rollout
+        steps to be over-confident by roughly 6x and worst in the tail -- it
+        predicted 0.520 where 0.015 occurred. Any threshold applied to that
+        output is therefore in model units, not real ones, which is why
+        max_risk=0.05 behaved like 0.008 and why relaxing it improved safety.
+
+        With a calibrator fitted and validated across disjoint scenes (Platt,
+        a=0.457 b=-2.333, held-out ECE 0.11-0.18 -> 0.02-0.03), the number means
+        what it says and a threshold can be stated as an actual collision
+        probability.
+        """
         self.ego = ego
         self.tracker = tracker
         self.inflate_m = float(inflate_m)
+        self.calibrator = calibrator
 
     @staticmethod
     def _support_radius(half_len: np.ndarray, half_wid: np.ndarray,
@@ -378,7 +393,8 @@ class RiskModel:
 
         Returns
         -------
-        RiskReport whose `total` is the max per-step probability.  We take the max
+        RiskReport whose `total` is the max per-step probability, calibrated
+        when a calibrator was supplied.  We take the max
         rather than 1 - prod(1 - p_t) because consecutive steps of the same encounter
         are strongly correlated — chaining them as independent events inflates a
         single close pass into near-certain collision.
@@ -437,8 +453,19 @@ class RiskModel:
         worst_step = int(np.argmax(per_step))
         worst_agent = max(per_agent_peak, key=per_agent_peak.get) if per_agent_peak else None
 
+        # Calibrate the scalar the filter thresholds on, and the per-step curve
+        # with it, so both are in the same units. Applied here rather than at
+        # each call site: a threshold comparing against an uncalibrated number
+        # somewhere would silently reintroduce the 6x scale error.
+        raw_total = float(per_step.max()) if T else 0.0
+        if self.calibrator is not None:
+            total = float(self.calibrator(raw_total))
+            per_step = np.asarray(self.calibrator(per_step), dtype=np.float64)
+        else:
+            total = raw_total
+
         return RiskReport(
-            total=float(per_step.max()) if T else 0.0,
+            total=total,
             per_step=per_step,
             worst_agent=worst_agent,
             worst_step=worst_step,

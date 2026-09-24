@@ -41,6 +41,8 @@ import numpy as np
 from .freespace import FreeSpace, FreeSpaceExtractor, GridConfig
 from .metrics import StepRecord, evaluate, format_report
 from .safety_filter import SafetyFilter
+from .calibration import (PlattCalibrator, expected_calibration_error,
+                          scale_for_risk_budget, scale_trajectory)
 from .structured import build_structured, structured_gate
 from .verifier import (DEGRADE_NONE, TrajectoryVerifier, compare_to_shadow,
                        decelerate_along)
@@ -138,6 +140,8 @@ class LoopConfig:
     use_verifier: bool = False       # independent rule check before the controller
     use_shadow: bool = False         # compare against an independent safe plan
     use_structured: bool = False     # TTC-response gate on the structured view
+    calibrate_risk: bool = False     # Platt-map the risk model's output
+    risk_budget: float = 0.0         # >0: solve speed scale for this budget
     rollout_steps: int = 0           # 0 = use the full candidate horizon
     world_model_keep: int = 3        # candidates surviving the rollout prune
 
@@ -177,6 +181,12 @@ class ClosedLoopRunner:
         self.shadow_excess: list = []
         self.structured_fired = 0
         self.structured_reasons: dict = {}
+        # Fitted in 2a812f4, validated across disjoint scenes in abf16d8.
+        self.calibrator = PlattCalibrator(a=0.457, b=-2.333, fitted=True,
+                                          n_positive=11)
+        self.risk_pred: list = []        # for closed-loop ECE monitoring
+        self.risk_outcome: list = []
+
         self.latent_model = latent_model or KinematicWorldModel(
             wheelbase=(config or LoopConfig()).wheelbase)
         self.critic = critic or AnalyticCritic(dt=(config or LoopConfig()).dt)
@@ -193,6 +203,21 @@ class ClosedLoopRunner:
         self._KBM = KinematicBicycleModel
         self._SimEgoState = SimEgoState
         self._Controller = TrajectoryController
+
+    def calibration_report(self, n_bins: int = 5) -> dict:
+        """Closed-loop ECE over this rollout's (prediction, outcome) pairs.
+
+        Reported from the loop itself so miscalibration is visible where it does
+        damage, rather than only in an offline script that nobody reruns after a
+        change to the risk model.
+        """
+        pairs = [(p, o) for p, o in zip(self.risk_pred, self.risk_outcome)
+                 if p is not None]
+        if not pairs:
+            return {'ece': float('nan'), 'n': 0}
+        p, o = zip(*pairs)
+        return expected_calibration_error(np.array(p), np.array(o),
+                                          n_bins, 'quantile')
 
     def run(self, command: int = 1) -> tuple[list[StepRecord], dict]:
         cfg = self.cfg
@@ -261,14 +286,36 @@ class ClosedLoopRunner:
                 lat['world_model'] = (time.perf_counter() - t0) * 1000
 
             t0 = time.perf_counter()
-            result = self.safety(candidates, scene, scores,
-                                 RiskModel(ego=ego, tracker=self.tracker))
+            risk_model = RiskModel(
+                ego=ego, tracker=self.tracker,
+                calibrator=self.calibrator if cfg.calibrate_risk else None)
+            result = self.safety(candidates, scene, scores, risk_model)
             lat['safety_filter'] = (time.perf_counter() - t0) * 1000
 
 
-            # Verification and shadow mode sit between planning and control --
-            # the last things that can change what the actuators receive.
+            # (b) Speed planning from the risk budget. Risk SCORES, this
+            # DECIDES, and the filter above already vetoed the unacceptable --
+            # so this only ever slows an already-admissible plan. Requires the
+            # calibrated model: solving a budget against a 6x-inflated input
+            # saturates the response on situations carrying 2% real risk.
             traj = np.asarray(result.trajectory, dtype=np.float64)
+            if cfg.risk_budget > 0 and not result.emergency and len(traj):
+                scale = scale_for_risk_budget(
+                    traj, scene, cfg.risk_budget, self.calibrator,
+                    lambda p: risk_model.evaluate(np.asarray(p, float),
+                                                  scene.agents, dt=cfg.dt).total)
+                traj = scale_trajectory(traj, scale)
+
+            # (c) ECE monitoring: record what was predicted for the plan about
+            # to be executed. The outcome is filled in below once the step has
+            # happened, so calibration drift is observable in the loop rather
+            # than only in an offline script.
+            if not result.emergency and len(traj):
+                self.risk_pred.append(float(risk_model.evaluate(
+                    traj, scene.agents, dt=cfg.dt).total))
+            else:
+                self.risk_pred.append(None)
+
             lat['verifier'] = 0.0
             if cfg.use_verifier and len(traj):
                 t0 = time.perf_counter()
@@ -304,6 +351,12 @@ class ClosedLoopRunner:
             t0 = time.perf_counter()
             control = ctrl.control(traj, v)
             lat['controller'] = (time.perf_counter() - t0) * 1000
+
+            # Outcome for the prediction recorded above: closest approach this
+            # step, thresholded the same way the calibration set was.
+            _cl = min((float(np.linalg.norm(np.asarray(a.xy, float)))
+                       for a in scene.agents), default=float('inf'))
+            self.risk_outcome.append(1.0 if _cl <= 1.0 else 0.0)
 
             # World-frame copies for the metrics, which score in world coords.
             c, s = np.cos(yaw), np.sin(yaw)
