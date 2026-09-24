@@ -135,6 +135,36 @@ def _agent_poly(box) -> np.ndarray:
                                  float(l), float(w))
 
 
+# Contact behind this bearing from the ego's heading is a rear impact.
+REAR_ARC_RAD = 2.0944          # +-120 deg from forward
+
+
+def _ego_at_fault(rec, box) -> bool:
+    """Did the EGO cause this contact, or was it run into?
+
+    An undifferentiated collision count makes every defensive layer look
+    harmful: braking invites a rear-end, the rear-end scores identically to
+    driving into a wall, and anything trained on that learns not to brake. The
+    same confusion shows up in evaluation -- caution raised the count here while
+    completion collapsed, which reads as "slowing is dangerous" when it means
+    "slowing gets you hit from behind".
+
+    Attribution is geometric and deliberately simple: contact inside the ego's
+    forward arc with the ego closing is the ego's doing; contact behind it, or
+    with the ego not closing, is not. Struck-while-stationary is never the ego's
+    fault -- there is no trajectory it could have chosen instead.
+    """
+    rel = np.asarray(box[0], dtype=np.float64) - np.asarray(rec.ego_xy, float)
+    rng = float(np.linalg.norm(rel))
+    if rng < 1e-6:
+        return True                       # coincident: no geometry to reason on
+    heading = np.array([np.cos(rec.ego_yaw), np.sin(rec.ego_yaw)])
+    bearing = float(np.arccos(np.clip(heading @ (rel / rng), -1.0, 1.0)))
+    if bearing > REAR_ARC_RAD:
+        return False                      # struck from behind
+    return float(rec.ego_v) > 0.5         # forward contact only counts if moving
+
+
 def safety_metrics(records: list[StepRecord], ego_length: float = 4.6,
                    ego_width: float = 1.8) -> dict:
     """Collisions, clearance and near-misses over a rollout."""
@@ -148,7 +178,8 @@ def safety_metrics(records: list[StepRecord], ego_length: float = 4.6,
             step_min = min(step_min, d)
             if d <= 0.0:
                 collisions.append({'step': k, 't': rec.t,
-                                   'track_id': box[4] if len(box) > 4 else None})
+                                   'track_id': box[4] if len(box) > 4 else None,
+                                   'ego_at_fault': _ego_at_fault(rec, box)})
             # TTC along the closing direction, only meaningful when approaching.
             rel = np.asarray(box[0], float) - rec.ego_xy
             rng = float(np.linalg.norm(rel))
@@ -163,6 +194,13 @@ def safety_metrics(records: list[StepRecord], ego_length: float = 4.6,
     return {
         'collision': len(collisions) > 0,
         'n_collision_steps': len(collisions),
+        # Split by attribution: an undifferentiated count makes every defensive
+        # layer look harmful, because braking invites a rear-end that scores the
+        # same as driving into a wall.
+        'n_collision_steps_ego_fault':
+            sum(1 for c in collisions if c.get('ego_at_fault')),
+        'n_collision_steps_other_fault':
+            sum(1 for c in collisions if not c.get('ego_at_fault')),
         'collisions': collisions[:20],
         'min_clearance_m': float(min(clearances)) if clearances else None,
         'mean_clearance_m': float(np.mean(clearances)) if clearances else None,
