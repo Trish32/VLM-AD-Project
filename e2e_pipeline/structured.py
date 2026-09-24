@@ -48,9 +48,14 @@ LATERAL_DRIFT = 0.8         # m/s sideways with low yaw rate -> lane change
 MOVING_MPS = 0.6            # below this, intent is 'stationary' not 'straight'
 
 # TTC gating.
-TTC_CRITICAL_S = 3.0        # closing inside this demands a response
+# Set from the MEASURED min-TTC distribution over 200 closed-loop steps
+# (p10 0.9 / p50 2.2 / p90 7.8 s), not from a plausible-sounding round number.
+# The original 3.0 sat ABOVE the median, so it fired on more than half of all
+# frames by construction -- a threshold above p50 guarantees noise.
+TTC_CRITICAL_S = 1.5        # closing inside this demands a response
 TTC_MIN_CLOSING = 0.5       # m/s; slower closure is not a conflict
 DECEL_EXPECTED = -0.3       # m/s^2; the plan must be at least this negative
+STATIONARY_PLAN_M = 0.5     # total plan arc below this: nothing to respond with
 
 INTENTS = ('stationary', 'straight', 'left', 'right', 'lane_change')
 
@@ -118,14 +123,47 @@ def classify_intent(agent) -> str:
     course = float(np.arctan2(v[1], v[0]))
     slip = (course - heading + np.pi) % (2 * np.pi) - np.pi
 
-    yaw_rate = float(getattr(agent, 'yaw_rate', 0.0) or 0.0)
-    if abs(yaw_rate) > YAW_RATE_TURN:
+    # Turn detection needs a heading RATE, which a single frame cannot supply.
+    # `Agent` has no yaw_rate field, so the original `getattr(agent,'yaw_rate',0)`
+    # was always 0.0 and left/right were unreachable -- a four-way classifier
+    # that was structurally three-way, silently. Measured over 200 steps: 5167
+    # stationary, 3111 straight, 57 lane_change, 0 left, 0 right.
+    #
+    # The rate is now taken from the forecast when one is attached, which is the
+    # only place in this pipeline that knows where an agent is going. Without a
+    # forecast the vocabulary is honestly three-way, and `turn_observable` says
+    # so rather than reporting 'straight' for a turning car.
+    yaw_rate = _forecast_yaw_rate(agent)
+    if yaw_rate is not None and abs(yaw_rate) > YAW_RATE_TURN:
         return 'left' if yaw_rate > 0 else 'right'
 
     lateral = speed * np.sin(slip)
     if abs(lateral) > LATERAL_DRIFT:
         return 'lane_change'
     return 'straight'
+
+
+def _forecast_yaw_rate(agent, dt: float = 0.5) -> float | None:
+    """Heading rate from the attached forecast, or None when there is none."""
+    pred = getattr(agent, 'pred', None)
+    loc = getattr(pred, 'loc', None) if pred is not None else None
+    if loc is None:
+        return None
+    arr = np.asarray(loc, dtype=np.float64)
+    if arr.ndim == 3:                      # (modes, T, 2) -> most likely mode
+        probs = getattr(pred, 'probs', None)
+        arr = arr[int(np.argmax(probs))] if probs is not None else arr[0]
+    if arr.ndim != 2 or len(arr) < 3:
+        return None
+    seg = np.diff(arr, axis=0)
+    head = np.arctan2(seg[:, 1], seg[:, 0])
+    dh = (np.diff(head) + np.pi) % (2 * np.pi) - np.pi
+    return float(np.mean(dh) / dt)
+
+
+def turn_observable(agent) -> bool:
+    """Whether left/right can be distinguished for this agent at all."""
+    return _forecast_yaw_rate(agent) is not None
 
 
 def time_to_collision(agent, ego_speed: float) -> tuple[float, float, float]:
@@ -198,6 +236,16 @@ def structured_gate(struct: StructuredScene, traj: np.ndarray, ego_speed: float,
     """
     out = []
     if len(traj) < 2:
+        return out
+
+    # Same guard the verifier needed: when the plan is already stopped, "it does
+    # not decelerate" is vacuous and the substitute would be the plan itself.
+    # Profiling caught this BEFORE integration -- unguarded it fired on 46% of
+    # steps at a firing median ego speed of 0.07 m/s, reproducing the verifier's
+    # original false-positive population exactly.
+    arc = float(np.linalg.norm(np.diff(np.vstack([[0.0, 0.0], np.asarray(traj)]),
+                                       axis=0), axis=1).sum())
+    if arc < STATIONARY_PLAN_M:
         return out
 
     pts = np.vstack([[0.0, 0.0], np.asarray(traj, dtype=np.float64)])
