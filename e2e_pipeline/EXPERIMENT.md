@@ -947,6 +947,88 @@ interact is a separate question and deliberately unmeasured here — combining
 them would leave any difference unattributable between the two branches, which
 is the confound §17 introduced and §19 spent two sections removing.
 
+## 25. Replacing the collision metric with divergence-aware measures
+
+§19 showed the collision count measures deviation from the recording, and it
+rewards parking — the safest policy by that number is to stop, which is also
+what got the ego struck. Four replacements:
+
+### (1) Collision rate within matched divergence buckets
+
+| divergence | GT n | GT rate | LIVE n | LIVE rate |
+|---|---|---|---|---|
+| 0–1 m | 71 | **0.0%** | 71 | **2.8%** |
+| 1–3 m | 32 | 0.0% | 28 | 0.0% |
+| 3–7 m | 53 | **0.0%** | 38 | **5.3%** |
+| 7+ m | 44 | **15.9%** | 63 | **34.9%** |
+
+This decomposes the perception cost that §17's headline could not. Live
+perception is worse **two ways, independently**: higher collision rate *within*
+every populated bucket, and more time spent *in* the worst bucket (63 vs 44
+steps above 7 m). The old whole-rollout number multiplied these together and
+attributed the product to the detector.
+
+Collisions are near-absent below 7 m of divergence under GT. That is the §19
+finding made quantitative.
+
+### (2) Recovery rate — the failure is a stationary point
+
+| | excursions past 3 m | recovery rate | longest unrecovered |
+|---|---|---|---|
+| GT | 9 | **0%** | 16 steps |
+| LIVE | 8 | **0%** | 16 steps |
+
+**Not one excursion recovers.** Once the ego falls 3 m behind it never returns
+below 1.5 m, in any scene, under either perception source. The longest trap runs
+16 of 20 steps.
+
+This is the single most important number in this document. Divergence is not
+marginal degradation that averaging can summarise — it is an **absorbing
+state**. Every metric that reports a mean over a rollout is averaging across a
+boundary the ego crosses once and never recrosses.
+
+### (3) Counterfactual safety — per-decision, no rollout
+
+Fixing the world at each logged frame and comparing the planner's chosen
+trajectory against the logged ego's own future through the same agents:
+
+| | n | mean Δrisk | worse | much worse (>0.10) | better |
+|---|---|---|---|---|---|
+| GT | 200 | **−0.0004** | 14% | 2% | 26% |
+| LIVE | 200 | **+0.0041** | 24% | 10% | 26% |
+
+Under GT the planner is, on average, **very slightly safer than the human** and
+is better more often than worse (26% vs 14%). Under live perception it tips
+negative: 24% worse, and much-worse cases rise 2% → 10%.
+
+This is the only metric here that evaluates the **planner** rather than the
+simulation, because both trajectories are scored against identical agents from
+an identical pose. It says the planning stage is sound and the perception stage
+costs roughly 1 decision in 10 becoming materially riskier.
+
+### (4) Progress per unit divergence
+
+| | progress | divergence | ratio | stalled | speed vs logged |
+|---|---|---|---|---|---|
+| GT | 416 m | 169 m | **2.5** | 33% | 81% |
+| LIVE | 369 m | 188 m | **2.0** | 44% | 72% |
+
+A stationary policy scores zero here rather than perfect. Live perception buys
+20% less progress per metre of drift, stalls 44% of steps against 33%, and runs
+at 72% of the logged speed against 81%.
+
+### Two measurement bugs caught before reporting
+
+The first run gave **Δrisk = 0.0000 exactly** for both arms, and 0%/0%/0%.
+`StepRecord` had no `planned_traj` field, so the code fell back to comparing the
+logged trajectory against itself. A null result that is *identically* zero is
+almost always a plumbing failure rather than a finding.
+
+The second: progress-per-divergence summed progress over all scenes and divided
+by the **last scene's** final divergence, giving LIVE a better ratio than GT
+(369 vs 124) by accident. Fixed to accumulate numerator and denominator per
+scene.
+
 ---
 
 ## Retractions

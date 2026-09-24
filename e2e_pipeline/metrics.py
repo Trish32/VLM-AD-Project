@@ -113,6 +113,7 @@ class StepRecord:
     accel: float                          # commanded m/s^2
     steer: float                          # commanded rad
     decision: str = ""
+    planned_traj: np.ndarray | None = None   # (T,2) ego frame, as executed
     agent_boxes: list = field(default_factory=list)   # [(xy, yaw, l, w, track_id)]
     predictions: dict = field(default_factory=dict)   # track_id -> (T,2) world
     latency_ms: dict = field(default_factory=dict)    # stage -> ms
