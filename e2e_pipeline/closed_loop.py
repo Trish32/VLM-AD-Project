@@ -402,6 +402,9 @@ class ClosedLoopRunner:
                 t=t, ego_xy=ego_xy, ego_yaw=yaw, ego_v=v,
                 accel=control.accel, steer=control.delta,
                 planned_traj=traj.copy(),
+                divergence_m=float(np.linalg.norm(
+                    np.array([x, y]) - self.world._frame(t)['xy']))
+                if hasattr(self.world, '_frame') else 0.0,
                 decision=('BRAKE' if result.emergency
                           else f'cand{result.chosen_index}'),
                 agent_boxes=boxes, predictions=preds, latency_ms=lat,

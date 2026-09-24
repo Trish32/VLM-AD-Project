@@ -7,6 +7,34 @@ that failed their own tests are recorded as retractions rather than edited out.
 Unless stated, the setup is: **10 nuScenes-mini scenes × 20 steps = 200 closed-loop
 steps**, DiffusionDrive anchors, ego seeded from the logged frame-0 speed.
 
+> ## ⚠ Read §19 before §§6–18
+>
+> **Every collision count taken under a simulated ego measures deviation from the
+> recording, not driving quality.** §19 pins the ego to the logged trajectory and
+> collisions fall to **zero** — under ground truth *and* under live perception.
+> The recorded agents drove around a car that followed the logged path; put the
+> ego back on it and nothing hits it, however it perceives.
+>
+> This affects the headline number of §§6–18 and §20, including three
+> conclusions I argued from it: `max_risk` 0.05→0.60 "reducing collisions 30→6"
+> (§7), the TTC gate "costing 12 collisions" (§8, §15), and "a tighter risk
+> budget produces 7× more collisions" (§11).
+>
+> **The rankings mostly survive; the stated reasons often do not.** `max_risk =
+> 0.60` really is better than 0.05 — not because it reduces collisions, but
+> because it brakes less, so the ego stays near the corridor the scene was
+> recorded around. §§23–24 found two *correct* fixes that this metric had
+> dismissed.
+>
+> **Not affected:** anything measured with the ego pinned (§19, §23, §24 pinned
+> rows), all calibration numbers (ECE/MCE compare a prediction to a per-step
+> outcome and never integrate a trajectory — §22 shows they transfer across
+> perception sources), §16's prediction RMSE, and §§1–3.
+>
+> §25 replaces the metric. As of `evaluate()` today, every rollout reports
+> divergence-bucketed collision rates, recovery rate and progress-per-drift
+> *above* the unconditioned count.
+
 ---
 
 ## Summary: what actually moved the numbers

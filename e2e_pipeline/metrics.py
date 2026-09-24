@@ -114,6 +114,7 @@ class StepRecord:
     steer: float                          # commanded rad
     decision: str = ""
     planned_traj: np.ndarray | None = None   # (T,2) ego frame, as executed
+    divergence_m: float = 0.0                # |ego - logged ego| this step
     agent_boxes: list = field(default_factory=list)   # [(xy, yaw, l, w, track_id)]
     predictions: dict = field(default_factory=dict)   # track_id -> (T,2) world
     latency_ms: dict = field(default_factory=dict)    # stage -> ms
@@ -358,6 +359,39 @@ def latency_metrics(records: list[StepRecord]) -> dict:
     return out
 
 
+def divergence_metrics(records: list[StepRecord], ego_length: float = 4.6,
+                       ego_width: float = 1.8) -> dict:
+    """Divergence-conditioned safety, recovery, and progress bought per drift.
+
+    Three of the four measures from `divergence_metrics.py`, computed inline so
+    every rollout reports them without a separate script. The fourth --
+    counterfactual safety -- needs the logged ego's own future and therefore
+    world-model access, so it stays in `divergence_report.py`.
+    """
+    from .divergence_metrics import (StepObs, aggregate_scenes,
+                                     bucketed_collision_rate, recovery_rate)
+
+    obs, prev = [], None
+    for k, rec in enumerate(records):
+        ego = _ego_poly(rec, ego_length, ego_width)
+        d = min([polygon_distance(ego, _agent_poly(b)) for b in rec.agent_boxes],
+                default=np.inf)
+        prog = 0.0 if prev is None else float(np.linalg.norm(
+            np.asarray(rec.ego_xy, float) - prev))
+        prev = np.asarray(rec.ego_xy, float)
+        obs.append(StepObs(divergence=float(rec.divergence_m), collided=d <= 0.0,
+                           progress_m=prog, ego_v=float(rec.ego_v),
+                           logged_v=float(rec.ego_v)))
+    if not obs:
+        return {'n': 0}
+    return {'n': len(obs),
+            'buckets': bucketed_collision_rate(obs),
+            'recovery': recovery_rate([o.divergence for o in obs]),
+            'progress': aggregate_scenes([obs]),
+            'mean_divergence_m': float(np.mean([o.divergence for o in obs])),
+            'max_divergence_m': float(np.max([o.divergence for o in obs]))}
+
+
 def evaluate(records: list[StepRecord], route: np.ndarray, dt: float,
              ego_length: float = 4.6, ego_width: float = 1.8) -> dict:
     """All five metric families over one rollout."""
@@ -365,6 +399,13 @@ def evaluate(records: list[StepRecord], route: np.ndarray, dt: float,
         'n_steps': len(records),
         'duration_s': len(records) * dt,
         'safety': safety_metrics(records, ego_length, ego_width),
+        # Collision counts conditioned on divergence, plus whether the ego ever
+        # recovers from falling behind. The unconditioned count in `safety`
+        # measures deviation from the recording as much as it measures driving:
+        # pinned to the logged trajectory it goes to zero under both GT and
+        # live perception. It is kept because the ego/other fault split still
+        # matters, but it is no longer the headline.
+        'divergence': divergence_metrics(records, ego_length, ego_width),
         'route': route_completion(records, route),
         'comfort': comfort_metrics(records, dt),
         'prediction': prediction_metrics(records, dt),
@@ -376,14 +417,43 @@ def format_report(m: dict) -> str:
     """Human-readable summary."""
     s, r, c = m['safety'], m['route'], m['comfort']
     p, lat = m['prediction'], m['latency']
-    L = [f"steps {m['n_steps']}  ({m['duration_s']:.1f} s)", '',
-         'SAFETY', f"  collision           : {'YES' if s['collision'] else 'no'}"
-                   f" ({s['n_collision_steps']} steps)",
-         f"  min clearance       : "
-         + (f"{s['min_clearance_m']:.2f} m" if s['min_clearance_m'] is not None else 'n/a'),
-         f"  TTC < {TTC_THRESHOLD}s violations : {s['ttc_violations']}",
-         f"  emergency brakes    : {s['emergency_brakes']}", '',
-         'ROUTE']
+    d = m.get('divergence', {})
+    L = [f"steps {m['n_steps']}  ({m['duration_s']:.1f} s)", '']
+
+    # Divergence-conditioned first, because the unconditioned collision count
+    # below measures deviation from the recording as much as driving quality:
+    # pinned to the logged trajectory it is zero under both GT and live
+    # perception. Reading it as a safety figure is what made every defensive
+    # layer in this project look harmful.
+    if d.get('n'):
+        rec, pr = d['recovery'], d['progress']
+        rr = rec['recovery_rate']
+        L += ['SAFETY (conditioned on divergence)',
+              f"  mean / max drift    : {d['mean_divergence_m']:.1f} / "
+              f"{d['max_divergence_m']:.1f} m"]
+        for b in d['buckets']:
+            if b['n']:
+                hi = 'inf' if not np.isfinite(b['hi']) else f"{b['hi']:.0f}"
+                L.append(f"    {b['lo']:.0f}-{hi} m".ljust(22)
+                         + f": {b['collision_rate']:.0%}  (n={b['n']})")
+        L += [f"  excursions >3 m     : {rec['excursions']}"
+              + (f", recovery {rr:.0%}" if np.isfinite(rr) else ', none to recover')
+              + (f", longest trap {rec['longest_unrecovered']} steps"
+                 if rec['longest_unrecovered'] else ''),
+              f"  progress / drift    : {pr['progress_per_div']:.1f}"
+              f"   (stalled {pr['stalled_fraction']:.0%})", '']
+
+    L += ['SAFETY (unconditioned -- see above before reading)',
+          f"  collision           : {'YES' if s['collision'] else 'no'}"
+          f" ({s['n_collision_steps']} steps)"]
+    if 'n_collision_steps_ego_fault' in s:
+        L.append(f"    ego-caused        : {s['n_collision_steps_ego_fault']}"
+                 f"   other-caused: {s['n_collision_steps_other_fault']}")
+    L += [f"  min clearance       : "
+          + (f"{s['min_clearance_m']:.2f} m" if s['min_clearance_m'] is not None else 'n/a'),
+          f"  TTC < {TTC_THRESHOLD}s violations : {s['ttc_violations']}",
+          f"  emergency brakes    : {s['emergency_brakes']}", '',
+          'ROUTE']
     if r.get('completion') is not None:
         L += [f"  completion          : {r['completion']:.1%} "
               f"({r['progress_m']:.1f} / {r['route_length_m']:.1f} m)",
