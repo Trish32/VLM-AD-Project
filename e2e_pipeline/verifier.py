@@ -262,3 +262,118 @@ class TrajectoryVerifier:
             rep.trajectory = comfortable_stop(v0, len(traj), self.dt)
             rep.substituted = True
         return rep
+
+
+# --- shadow mode ------------------------------------------------------------
+#
+# The checks above are pass/fail against fixed rules. Shadow mode is different:
+# the verifier computes its OWN trajectory from the scene, without consulting the
+# planner, and compares.
+#
+# THE ASYMMETRY IS THE WHOLE DESIGN. Comparing geometry directly does not work:
+# the shadow plan holds the current heading, so any legitimate lane change,
+# turn, or obstacle detour reads as a large deviation and the monitor fires
+# constantly on correct behaviour. A monitor that cries wolf is removed, and then
+# there is no monitor.
+#
+# So deviation is measured only in the direction where "different" implies
+# "worse": LONGITUDINAL EXCESS, how much further the plan travels than an
+# independently-computed safe plan would. A plan more conservative than the
+# shadow is never flagged. A plan that goes further than the safe speed profile
+# allows is flagged in proportion to the excess. Lateral deviation is reported
+# for diagnostics but deliberately does not trigger degradation, because this
+# layer cannot tell a dangerous swerve from a correct one -- that judgement needs
+# lane topology it does not have.
+
+SHADOW_WARN_M = 3.0        # longitudinal excess -> decelerate
+SHADOW_CRIT_M = 8.0        # -> pull over
+IDM_HEADWAY_S = 1.6
+IDM_MIN_GAP_M = 5.0
+
+DEGRADE_NONE, DEGRADE_DECEL, DEGRADE_PULLOVER = 'none', 'decelerate', 'pull_over'
+
+
+@dataclass
+class ShadowReport:
+    excess_m: float                  # how much further the plan goes than shadow
+    lateral_m: float                 # reported, does not trigger
+    action: str = DEGRADE_NONE
+    shadow: np.ndarray | None = None
+    trajectory: np.ndarray | None = None
+
+    def describe(self) -> str:
+        return (f'shadow: excess {self.excess_m:+.2f} m  lateral {self.lateral_m:.2f} m'
+                f'  -> {self.action}')
+
+
+def shadow_plan(scene: SceneRepresentation, horizon: int, dt: float,
+                speed_limit: float = SPEED_LIMIT_MPS) -> np.ndarray:
+    """An independently-computed conservative plan: hold heading, IDM speed.
+
+    Deliberately simple and straight-ahead. Its job is not to drive well -- it is
+    to be a reference the E2E planner cannot influence, computed from the scene
+    by code with no shared state. Sophistication here would mean shared
+    assumptions, which is exactly what a shadow is supposed to avoid.
+
+    Speed is the lesser of the limit and an IDM-style safe following speed set by
+    the nearest agent in the ego's own lane, APPROACHED at a comfortable rate
+    rather than jumped to. From 30 m/s the shadow does not satisfy a 16.7 m/s
+    limit inside a 3 s horizon -- that needs 4.4 s at 3 m/s^2 -- and pretending
+    otherwise would make the reference physically unachievable, which would flag
+    every plan as excessive and make the monitor useless.
+    """
+    v0 = float(scene.ego.speed)
+    lead = np.inf
+    for ag in scene.agents:
+        x, y = float(ag.xy[0]), float(ag.xy[1])
+        if x > 0 and abs(y) < 1.8:
+            lead = min(lead, x - 0.5 * float(ag.lwh[0]))
+
+    v_safe = speed_limit
+    if np.isfinite(lead):
+        # Speed at which the lead gap equals the desired headway.
+        v_safe = max(0.0, (lead - IDM_MIN_GAP_M) / IDM_HEADWAY_S)
+    v_target = float(min(speed_limit, v_safe))
+
+    out, x, v = [], 0.0, v0
+    for _ in range(horizon):
+        # Approach the target at a comfortable rate rather than stepping to it.
+        v += float(np.clip(v_target - v, -3.0 * dt, 1.5 * dt))
+        v = max(0.0, v)
+        x += v * dt
+        out.append([x, 0.0])
+    return np.asarray(out, dtype=np.float64)
+
+
+def compare_to_shadow(traj: np.ndarray, scene: SceneRepresentation,
+                      dt: float = 0.5, speed_limit: float = SPEED_LIMIT_MPS
+                      ) -> ShadowReport:
+    """Longitudinal excess of the plan over an independent safe plan."""
+    traj = np.asarray(traj, dtype=np.float64)
+    shadow = shadow_plan(scene, len(traj), dt, speed_limit)
+
+    # Arc length, not endpoint distance: a plan that curves covers more ground
+    # than its displacement suggests, and it is the ground covered that has to be
+    # justified against the safe speed profile.
+    def arc(p):
+        return float(np.linalg.norm(np.diff(np.vstack([[0.0, 0.0], p]), axis=0),
+                                    axis=1).sum())
+
+    excess = arc(traj) - arc(shadow)
+    lateral = float(np.abs(traj[:, 1]).max())
+
+    action = DEGRADE_NONE
+    if excess > SHADOW_CRIT_M:
+        action = DEGRADE_PULLOVER
+    elif excess > SHADOW_WARN_M:
+        action = DEGRADE_DECEL
+
+    rep = ShadowReport(excess_m=excess, lateral_m=lateral, action=action,
+                       shadow=shadow, trajectory=traj)
+    if action == DEGRADE_DECEL:
+        # Fall back to the shadow itself: it is by construction the safe profile
+        # the plan overshot, so it is the natural degraded target.
+        rep.trajectory = shadow
+    elif action == DEGRADE_PULLOVER:
+        rep.trajectory = comfortable_stop(float(scene.ego.speed), len(traj), dt)
+    return rep
