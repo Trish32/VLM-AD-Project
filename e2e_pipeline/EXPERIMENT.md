@@ -238,6 +238,35 @@ What ε *should* be is a policy statement about acceptable collision probability
 what this table shows is what each choice costs, and that the relationship is not
 monotone in the direction intuition expects.
 
+## 12. Scene-level calibration validation
+
+The §9 split was random over *steps*, so all ten scenes appeared in both halves
+and scene structure leaked. The honest test trains and tests on disjoint scenes,
+run in both directions so neither half is cherry-picked:
+
+| split | train positives | identifiable | fitted a | fitted b | ECE | MCE |
+|---|---|---|---|---|---|---|
+| train 0-4 / test 5-9 | 15 | yes | 0.624 | −2.203 | 0.1109 → **0.0182** | 0.4725 → **0.0765** |
+| train 5-9 / test 0-4 | 6 | no | 0.560 | −2.185 | 0.1793 → **0.0338** | 0.4820 → **0.0772** |
+
+**The correction generalises.** ECE improves 6.1× and 5.3× on scenes the fit
+never saw, and the fitted bias is near-identical across the two directions
+(−2.203 vs −2.185) despite one fit having 2.5× the positives of the other.
+
+That stability has a cause worth stating: the bias term is essentially set by the
+base rate, which 966 samples determine well even when positives are scarce. The
+slope needs positives and is the shakier of the two (0.624 vs 0.560).
+
+**The fragility is in the scene distribution, not the fit.** Positives per scene:
+
+    scene    0   1   2   3   4   5   6   7   8   9
+    pos      0   6   0   0   9   0   6   0   0   0
+
+Only **3 of 10 scenes contain any positive event at all**. A split placing all
+three in the test half would leave the training half with zero positives and no
+fit possible. The validation passed, but it rests on three scenes, and that is a
+property of nuScenes-mini rather than of the method.
+
 ---
 
 ## Retractions
