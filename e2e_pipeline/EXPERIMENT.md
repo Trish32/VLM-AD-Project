@@ -782,6 +782,67 @@ scene representation robust to an ego that has drifted — free space and agent
 geometry that stay valid off the logged path. The second is the real
 requirement; the first is what the pinned mode does artificially.
 
+## 22. Re-validating the three retired components against live perception
+
+`calibrate.py` (inert), the TTC gate (retired), and `residual.py` (abandoned)
+were all judged under the GT oracle. §19 showed the oracle was hiding real
+costs, so each verdict deserved re-testing against live detections.
+
+### TTC gate — now harmless, and still useless
+
+| config (live perception) | ego-fault | other | clearance | brakes | **firings** |
+|---|---|---|---|---|---|
+| simulated, baseline | 0 | 26 | 1.12 m | 125 | — |
+| simulated, + TTC gate | 0 | 26 | 1.12 m | 125 | **0** |
+| pinned, baseline | 0 | 0 | 1.73 m | 72 | — |
+| pinned, + TTC gate | 0 | 0 | 1.73 m | 72 | **0** |
+
+Under GT the CPA gate fired 4 times and cost 12 collisions. Under live
+detections it fires **zero** times, in both ego modes, so the loop is identical
+to baseline on every column.
+
+The reason is noise: detector position and velocity error inflates the
+closest-approach miss distance, and CPA requires a miss under a vehicle width.
+Real perception rarely produces an agent whose predicted path passes that close
+with a TTC under 1.5 s.
+
+That is not a rehabilitation. A gate that never fires cannot help, and the one
+configuration where it *did* fire it did harm. Verdict unchanged: retired.
+
+### calibrate.py — still inert, and structurally so
+
+`W_RISK` swept over a 120× range (0.5 → 60) under live detections: argmax is
+candidate 3 at every value. The weight cannot affect the ranking.
+
+The reason is unchanged by perception, because it was never about perception:
+all six anchors share an arc length, so progress, off-road and clearance are
+constant across candidates and risk is the only discriminating term — and
+`argmax(−λ·risk)` is independent of λ. Swapping the detector changes the risk
+*values*, not the fact that they are the sole discriminator.
+
+### residual.py — cannot be meaningfully re-fitted under live perception
+
+Not measured, because the measurement would be meaningless, and that is worth
+stating rather than silently skipping.
+
+The residual's target is *actual agent motion minus the IDM prediction*. Under
+GT, "actual" is the nuScenes annotation — a real observation. Under live
+perception there is no such ground truth: the only available "actual" is the
+detector's own output at the next step. Fitting to that trains the model to
+predict **detector noise**, not physics error, and a good fit would mean the
+residual had learned to reproduce the detector's mistakes.
+
+Refitting would produce a number; it would not produce knowledge. Abandoned
+verdict stands, for a different and stronger reason than §16's.
+
+### What the round-trip established
+
+All three verdicts survive live perception, reached independently of the oracle
+that §19 discredited. That is worth more than the individual results: it means
+§§14–16's conclusions about these components were not artefacts of GT, even
+though §§17–21 showed the oracle was distorting the absolute numbers around
+them.
+
 ---
 
 ## Retractions
