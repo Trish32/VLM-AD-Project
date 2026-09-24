@@ -261,3 +261,102 @@ def structured_gate(struct: StructuredScene, traj: np.ndarray, ego_speed: float,
             f'closing {worst.closing_mps:.1f} m/s) but plan accelerates '
             f'{accel:+.2f} m/s^2'))
     return out
+
+
+# --- lane topology ----------------------------------------------------------
+#
+# Intent inferred from bare kinematics cannot mean much: "left turn" is a claim
+# about a lane graph, and without one the classifier can only say "drifting
+# sideways". This adds the graph, from the nuScenes map expansion.
+#
+# It is OPTIONAL and supplied by the caller rather than reached for.
+# `SceneRepresentation` is ego-frame and map-free by design -- that is what makes
+# the detector swappable -- so pulling a map into it would couple the scene
+# contract to one dataset. `LaneContext` carries the map and the global ego pose
+# alongside, and everything degrades to None when it is absent.
+
+LANE_RADIUS_M = 3.0          # lane assignment tolerance
+
+
+@dataclass
+class LaneContext:
+    """What the structured layer needs to query a map, supplied externally."""
+
+    nusc_map: object
+    ego_xy_global: np.ndarray
+    ego_yaw_global: float
+
+
+@dataclass
+class LaneFacts:
+    ego_lane: str | None = None
+    same_lane: list[int] = field(default_factory=list)      # track ids
+    merging: list[int] = field(default_factory=list)        # feed into ego's lane
+    unassigned: int = 0                                     # off-lane agents
+
+    def describe(self) -> str:
+        return (f'lane {self.ego_lane[:8] if self.ego_lane else "none"}  '
+                f'same {self.same_lane}  merging {self.merging}  '
+                f'off-lane {self.unassigned}')
+
+
+def build_lane_facts(ctx: LaneContext | None, scene) -> LaneFacts | None:
+    """Lane membership and merge relationships, or None without a map.
+
+    An agent is 'merging' when its lane is an INCOMING edge of the ego's lane --
+    it will join our lane without currently being in it. That is the case
+    neither the safety filter nor the TTC gate can see: the filter checks where
+    things are, TTC checks the line of sight, and a vehicle about to merge is
+    conflicting on neither measure until it already has.
+    """
+    if ctx is None or ctx.nusc_map is None:
+        return None
+    m = ctx.nusc_map
+    ex, ey = float(ctx.ego_xy_global[0]), float(ctx.ego_xy_global[1])
+    ego_lane = m.get_closest_lane(ex, ey, radius=LANE_RADIUS_M) or None
+
+    facts = LaneFacts(ego_lane=ego_lane)
+    if ego_lane is None:
+        facts.unassigned = len(scene.agents)
+        return facts
+
+    try:
+        incoming = set(m.get_incoming_lane_ids(ego_lane))
+    except Exception:
+        incoming = set()
+
+    c, s = np.cos(ctx.ego_yaw_global), np.sin(ctx.ego_yaw_global)
+    for a in scene.agents:
+        gx = ex + c * float(a.xy[0]) - s * float(a.xy[1])
+        gy = ey + s * float(a.xy[0]) + c * float(a.xy[1])
+        lane = m.get_closest_lane(gx, gy, radius=LANE_RADIUS_M) or None
+        if lane is None:
+            facts.unassigned += 1
+        elif lane == ego_lane:
+            facts.same_lane.append(int(a.track_id))
+        elif lane in incoming:
+            facts.merging.append(int(a.track_id))
+    return facts
+
+
+def lane_conflict_gate(facts: LaneFacts | None, struct: StructuredScene,
+                       ttc_s: float = 4.0) -> list[Intervention]:
+    """A vehicle merging into our lane while closing, before it is in our path.
+
+    Deliberately a LONGER horizon than the TTC gate (4 s vs 1.5 s): a merge is
+    foreseeable earlier than a rear-end, and the whole point is to react before
+    the geometry makes it obvious. Firing on the same 1.5 s would mean the
+    vehicle is already alongside, at which point the ordinary gates see it too.
+    """
+    out = []
+    if facts is None or not facts.merging:
+        return out
+    by_id = {o.track_id: o for o in struct.objects}
+    for tid in facts.merging:
+        o = by_id.get(tid)
+        if o is not None and np.isfinite(o.ttc_s) and o.ttc_s < ttc_s:
+            out.append(Intervention(
+                'merging_conflict',
+                f'track {tid} in an incoming lane, ttc {o.ttc_s:.1f}s, '
+                f'closing {o.closing_mps:.1f} m/s -- not yet in our path'))
+    return out

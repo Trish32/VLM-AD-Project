@@ -82,3 +82,66 @@ def test_gate_silent_when_the_plan_is_already_stopped():
 def test_threshold_sits_below_the_observed_median():
     """3.0 s fired on >half of frames by construction; 1.5 s does not."""
     assert TTC_CRITICAL_S < 2.2
+
+
+# --- lane topology ----------------------------------------------------------
+
+
+class _FakeMap:
+    """Minimal map stand-in: two lanes, one feeding the other."""
+
+    def __init__(self):
+        self.ego_lane, self.feeder = 'LANE_EGO', 'LANE_FEED'
+
+    def get_closest_lane(self, x, y, radius=3.0):
+        if abs(y) < 2.0:
+            return self.ego_lane
+        if 2.0 <= abs(y) < 6.0:
+            return self.feeder
+        return ''
+
+    def get_incoming_lane_ids(self, lane):
+        return [self.feeder] if lane == self.ego_lane else []
+
+
+def test_lane_facts_partition_agents():
+    from e2e_pipeline.structured import LaneContext, build_lane_facts
+    scene = _scene([_ag(15.0, 0.0, tid=1),      # same lane
+                    _ag(18.0, 4.0, tid=2),      # feeder lane
+                    _ag(12.0, 20.0, tid=3)])    # off-lane
+    ctx = LaneContext(_FakeMap(), np.zeros(2), 0.0)
+    f = build_lane_facts(ctx, scene)
+    assert f.ego_lane == 'LANE_EGO'
+    assert f.same_lane == [1] and f.merging == [2] and f.unassigned == 1
+
+
+def test_lane_layer_absent_without_a_map():
+    """Degrades to None rather than reaching for a map itself."""
+    from e2e_pipeline.structured import build_lane_facts
+    assert build_lane_facts(None, _scene()) is None
+
+
+def test_merging_conflict_gate_can_fire():
+    """Proof of a positive case -- the gate fired 0 times on real scenes.
+
+    Zero firings alone cannot distinguish 'correctly silent' from 'wired wrong',
+    the same ambiguity shadow mode had. This constructs the case it exists for:
+    a vehicle in an incoming lane, closing, not yet in our path.
+    """
+    from e2e_pipeline.structured import (LaneContext, build_lane_facts,
+                                         lane_conflict_gate)
+    merging = _ag(12.0, 4.0, vx=-6.0, tid=2)     # feeder lane, closing hard
+    scene = _scene([merging], speed=10.0)
+    ctx = LaneContext(_FakeMap(), np.zeros(2), 0.0)
+    facts = build_lane_facts(ctx, scene)
+    assert facts.merging == [2]
+    assert lane_conflict_gate(facts, build_structured(scene))
+
+
+def test_merging_gate_silent_when_not_closing():
+    from e2e_pipeline.structured import (LaneContext, build_lane_facts,
+                                         lane_conflict_gate)
+    scene = _scene([_ag(40.0, 4.0, vx=12.0, tid=2)], speed=10.0)
+    ctx = LaneContext(_FakeMap(), np.zeros(2), 0.0)
+    facts = build_lane_facts(ctx, scene)
+    assert lane_conflict_gate(facts, build_structured(scene)) == []
