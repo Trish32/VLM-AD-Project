@@ -91,6 +91,28 @@ class FeasibilityLimits:
     unknown_penalty: float = 2.0                     # ranking cost per metre of it
     unknown_sight_margin_m: float = 1.0              # slack on the stopping check
 
+    def __post_init__(self) -> None:
+        """Reject configurations that cannot do what they claim.
+
+        `three_valued_unknown` and `allow_unknown` are two different answers to
+        the same question and setting both hides which one applied. And a
+        three-valued gate whose penalty is zero is a two-valued gate wearing a
+        different name -- it admits unknown space and then prices it at nothing,
+        which is exactly the silent no-op this whole line of work has been
+        tripping over.
+        """
+        if self.three_valued_unknown and self.allow_unknown:
+            raise ValueError(
+                'three_valued_unknown and allow_unknown both set: the first '
+                'grades unknown space, the second waves it through. Pick one.')
+        if self.three_valued_unknown and self.unknown_penalty <= 0.0:
+            raise ValueError(
+                'three_valued_unknown with unknown_penalty=0 admits unobserved '
+                'space and prices it at nothing, which is allow_unknown with '
+                'extra steps. Set a positive penalty.')
+        if self.unknown_speed_limit <= 0.0:
+            raise ValueError('unknown_speed_limit must be positive')
+
     @property
     def max_curvature(self) -> float:
         """Tightest turn the steering clamp permits: kappa = tan(delta_max) / L."""
@@ -184,13 +206,18 @@ class SafetyFilter:
                  w_risk: float = 10.0,
                  w_clearance: float = 1.0,
                  w_planner: float = 2.0,
-                 footprint_lattice: tuple[int, int] = (5, 3)) -> None:
+                 footprint_lattice: tuple[int, int] = (5, 3),
+                 multiplicative: bool = False) -> None:
         self.limits = limits or FeasibilityLimits()
         self.dt = float(dt)
         self.w_risk = float(w_risk)
         self.w_clearance = float(w_clearance)
         self.w_planner = float(w_planner)
         self.footprint_lattice = footprint_lattice
+        #: score = clearance * (1 - calibrated_risk) instead of a weighted sum.
+        #: Default off so no committed result moves; see `_evaluate` for why the
+        #: additive form loses risk discrimination to calibration.
+        self.multiplicative = bool(multiplicative)
 
     # -- geometry -----------------------------------------------------------
 
@@ -410,7 +437,36 @@ class SafetyFilter:
         # This is where penetration depth belongs -- it grades a plan, it does
         # not decide whether the plan is admissible.
         unknown_term = self.limits.unknown_penalty * v.unknown_depth_m
-        v.cost = float(risk_term + clear_term + plan_term + unknown_term)
+
+        if self.multiplicative:
+            # WHY ADDITIVE RANKING LOSES TO CALIBRATION.
+            #
+            # Platt maps every raw risk into [0.0884, 0.1328] -- a band 4.4
+            # points wide. In an additive score the risk term can therefore
+            # only ever move the total by w_risk * 0.044, while clearance
+            # spreads 0.893 across candidates. Calibrating the risk model, which
+            # is the correct thing to do to its NUMBERS, destroys its influence
+            # on the RANKING: measured, wiring the calibrator into the critic
+            # cut risk spread 0.516 -> 0.081, a 6.4x loss of discrimination.
+            #
+            # Multiplying instead of adding makes risk a FRACTION of the value
+            # of a plan rather than a fixed subtraction from it:
+            #
+            #     score = clearance * (1 - calibrated_risk)
+            #
+            # A 10% collision probability then costs 10% of whatever the plan
+            # was worth, which is scale-free -- it does not matter that the
+            # calibrated range is narrow, because the multiplier acts on a term
+            # that is not. It also has the right limit behaviour: risk -> 1
+            # zeroes the plan's value however much clearance it has, whereas an
+            # additive score lets a roomy trajectory buy its way past danger.
+            value = (min(v.min_clearance, 2.0) * self.w_clearance
+                     + self.w_planner * planner_score)
+            risk_p = float(np.clip(v.risk.total if v.risk is not None else 0.0,
+                                   0.0, 1.0))
+            v.cost = float(-value * (1.0 - risk_p) + unknown_term)
+        else:
+            v.cost = float(risk_term + clear_term + plan_term + unknown_term)
         return v
 
     # -- fallback -----------------------------------------------------------

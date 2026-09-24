@@ -322,6 +322,31 @@ def constant_velocity_prediction(agent: Agent, horizon: int, dt: float,
 # ---------------------------------------------------------------------------
 
 
+class _Required:
+    """Sentinel distinguishing "no free space here" from "forgot to pass it".
+
+    `freespace=None` meant both, and the difference is the whole bug: six
+    separate call sites omitted the argument while `unknown_prior` was set, and
+    every one silently computed a risk with the prior switched off. None of them
+    raised, none of them logged, and the resulting "the prior changes nothing"
+    was reported three times as a finding about occlusion.
+
+    A default that silently disables a safety term is the wrong default. With
+    this sentinel, omitting `freespace` while a prior is configured is an
+    explicit error; passing `None` is the deliberate "this caller genuinely has
+    no free-space raster" and still works.
+    """
+
+    def __repr__(self) -> str:                       # pragma: no cover
+        return '<required>'
+
+    def __bool__(self) -> bool:                      # pragma: no cover
+        return False
+
+
+_REQUIRED = _Required()
+
+
 @dataclass
 class RiskReport:
     """Per-candidate risk breakdown, kept for diagnosis rather than just a scalar.
@@ -453,7 +478,7 @@ class RiskModel:
     # -- main entry point ---------------------------------------------------
 
     def evaluate(self, ego_traj: np.ndarray, agents: list[Agent],
-                 dt: float = 0.5, freespace=None) -> RiskReport:
+                 dt: float = 0.5, freespace=_REQUIRED) -> RiskReport:
         """Collision risk of one candidate plan.
 
         Parameters
@@ -471,6 +496,18 @@ class RiskModel:
         are strongly correlated — chaining them as independent events inflates a
         single close pass into near-certain collision.
         """
+        if freespace is _REQUIRED:
+            if self.unknown_prior > 0.0:
+                raise TypeError(
+                    'RiskModel was built with unknown_prior='
+                    f'{self.unknown_prior:g} but evaluate() was called without '
+                    '`freespace`. The prior would be silently ignored, which is '
+                    'how six call sites came to report "the occlusion prior '
+                    'changes nothing". Pass freespace=<FreeSpace> to price '
+                    'unobserved space, or freespace=None to state explicitly '
+                    'that this caller has none.')
+            freespace = None
+
         traj = np.asarray(ego_traj, dtype=np.float64)
         T = traj.shape[0]
         horizon = np.arange(1, T + 1, dtype=np.float64) * dt

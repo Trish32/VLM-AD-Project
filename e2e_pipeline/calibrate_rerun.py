@@ -148,14 +148,28 @@ def main():
         finally:
             WM.W_RISK = old
 
+    # Swept to 15, not 9.5. Risk spread across candidates is 0.081 against
+    # clearance's 0.893, so lam * risk only overtakes the clearance term around
+    # lam ~ 11 -- below that the ranking cannot reorder however the dual moves,
+    # and stopping at 9.5 measured the region where no answer was possible.
+    print(f'  {"lam":>6}{"mean risk":>12}{"progress":>11}{"brakes":>9}'
+          f'{"lam*risk spread":>17}')
+    CLEARANCE_SPREAD = 0.893          # measured, same run as the term table
+    RISK_SPREAD = 0.081
+    for lam in (6.0, 9.0, 11.0, 12.0, 13.0, 15.0):
+        risk, prog = evaluate(lam)
+        dom = lam * RISK_SPREAD
+        print(f'  {lam:>6.1f}{risk:>12.4f}{prog:>11.1%}{"":>9}{dom:>12.3f}'
+              f'{"  <- exceeds clearance" if dom > CLEARANCE_SPREAD else ""}')
+
     trace = CalibrationTrace()
     lam = calibrate_risk_price(evaluate, RiskBudget(max_mean_risk=0.05),
                                lam0=6.0, eta=40.0, iters=5, trace=trace)
+    print('\n  dual ascent:')
     print(trace.describe())
     print(f'  converged lam {lam:.3f}')
     if len(set(f'{p:.4f}' for p in trace.progress)) == 1:
-        print('  progress IDENTICAL at every lam -- the price is still '
-              'unidentifiable, and for the structural reason above')
+        print('  progress IDENTICAL over the dual ascent range')
 
 
 if __name__ == '__main__':

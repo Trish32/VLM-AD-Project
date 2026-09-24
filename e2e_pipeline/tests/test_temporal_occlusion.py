@@ -138,3 +138,49 @@ def test_three_valued_gate_does_not_fail_clearance_on_unknown_cells():
     assert v2.min_clearance == pytest.approx(0.0), 'fixture: two-valued sees 0 m'
     assert v3.min_clearance > 0.0, 'three-valued must ignore unknown cells here'
     assert v3.unknown_depth_m > 0.0, 'depth should be recorded for the penalty'
+
+
+# --- make the omission impossible rather than silent ------------------------
+
+
+def test_omitting_freespace_with_a_prior_is_an_error_not_a_no_op():
+    """The exact defect, six times over: a keyword-only arg defaulting to None.
+
+    `freespace=None` meant both "this caller has no raster" and "I forgot", so
+    every omission silently disabled the prior and the resulting null was
+    reported as a finding about occlusion.
+    """
+    from e2e_pipeline.scene import EgoState
+    from e2e_pipeline.uncertainty import RiskModel
+    traj = np.stack([[5.0 * (t + 1), 0.0] for t in range(6)])
+    rm = RiskModel(EgoState(speed=8.0), unknown_prior=0.10)
+    with pytest.raises(TypeError, match='freespace'):
+        rm.evaluate(traj, [])
+
+
+def test_explicit_none_is_still_allowed():
+    """A caller that genuinely has no free space must still be able to say so."""
+    from e2e_pipeline.scene import EgoState
+    from e2e_pipeline.uncertainty import RiskModel
+    traj = np.stack([[5.0 * (t + 1), 0.0] for t in range(6)])
+    assert RiskModel(EgoState(speed=8.0), unknown_prior=0.10).evaluate(
+        traj, [], freespace=None).total >= 0.0
+
+
+def test_no_prior_means_freespace_stays_optional():
+    """Most call sites have no prior and must not be forced to pass a raster."""
+    from e2e_pipeline.scene import EgoState
+    from e2e_pipeline.uncertainty import RiskModel
+    traj = np.stack([[5.0 * (t + 1), 0.0] for t in range(6)])
+    assert RiskModel(EgoState(speed=8.0)).evaluate(traj, []).total >= 0.0
+
+
+def test_limits_reject_contradictory_unknown_configuration():
+    from e2e_pipeline.safety_filter import FeasibilityLimits
+    with pytest.raises(ValueError, match='Pick one'):
+        FeasibilityLimits(three_valued_unknown=True, allow_unknown=True)
+    with pytest.raises(ValueError, match='extra steps'):
+        FeasibilityLimits(three_valued_unknown=True, unknown_penalty=0.0)
+    with pytest.raises(ValueError, match='unknown_speed_limit'):
+        FeasibilityLimits(unknown_speed_limit=0.0)
+    FeasibilityLimits(three_valued_unknown=True)          # the valid one

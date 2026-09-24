@@ -1342,6 +1342,165 @@ calibration should be refitted.
 
 ---
 
+## 28. Auditing every "inert" conclusion for reachability
+
+Six call sites passed no `freespace=` while an occlusion prior was configured.
+Each silently disabled the prior, and the resulting flat column was reported
+three separate times as a finding about occlusion. That is enough repetitions of
+one mistake to require going back over every null result in this document and
+asking a different question of it:
+
+> Not "did it change anything", but **"could it have?"**
+
+A flat column has two causes that look identical from the outside — the
+mechanism is inert, or the measurement cannot see it — and only the second is a
+bug. The audit:
+
+| claim | could the measurement have moved? | verdict |
+|---|---|---|
+| occlusion prior inert (×3) | No — six independent blockers | **unreachable** |
+| `traversable &= ~unknown` (§25) | No — `mask_camera` never supplied, 0.0% unknown | **unreachable** |
+| counterfactual much-worse tail (§25) | No — risk model built with no tracker | **unreachable** |
+| W_RISK unidentifiable (§22) | No — swept 6.0–9.5, reorders above ~11 | **unreachable** |
+| critic "nothing to rank" (§22) | No — command hardcoded, 0.5 m candidate spread | **unreachable** |
+| residual unfittable under live (§22) | No — 6 training pairs from 14,615 agents | **unreachable** |
+| §12 map work null | No — metric artefact; signature appears pinned (§23) | **unreachable** |
+| TTC gate harmful (§8) | Yes — 27 interventions fired and metrics degraded | genuine |
+| verifier near-neutral (§8) | Yes — 6 interventions in 200 | genuine |
+| shadow never fires at logged speed (§8) | Yes — proven able to fire at 20 m/s | genuine |
+| residual unlearnable *after* the fix (§26) | Yes — 9,419 pairs, and a GT control | genuine |
+
+**Seven of eleven were unreachable measurements, not inert mechanisms.** The
+four that survive share a property the seven lack: each was accompanied by a
+non-zero firing count, which is direct evidence the path executed. Every one of
+the seven reported a mechanism's effect without ever reporting that the
+mechanism ran.
+
+### Making the failure impossible rather than rare
+
+`freespace=None` meant both "this caller has no raster" and "I forgot". Those
+need different handling and the signature could not tell them apart, which is
+why six omissions were silent. `RiskModel.evaluate` now takes a `_REQUIRED`
+sentinel: omitting `freespace` while `unknown_prior > 0` raises, while
+`freespace=None` remains the explicit "no raster here" and still works.
+
+`FeasibilityLimits.__post_init__` rejects configurations that cannot do what
+they claim — `three_valued_unknown` together with `allow_unknown` (two answers
+to one question), and a three-valued gate with `unknown_penalty=0` (which is
+`allow_unknown` with extra steps).
+
+`tests/test_layer_reachability.py` asserts, per layer, that toggling it changes
+something recorded. It deliberately tests reachability rather than benefit: a
+layer that fires and does no good is a finding; a layer that cannot fire is a
+bug wearing a finding's clothes.
+
+## 29. Calibration compresses discrimination, and additive ranking cannot absorb it
+
+The Platt map fitted in §9 is `sigmoid(0.457 · raw − 2.333)`. Its **entire
+output range** is:
+
+| raw | 0.00 | 0.05 | 0.10 | 0.30 | 0.60 | 1.00 |
+|---|---|---|---|---|---|---|
+| calibrated | 0.0884 | 0.0903 | 0.0922 | 0.1001 | 0.1132 | **0.1328** |
+
+Every possible risk lands in **[0.0884, 0.1328]** — a band 4.4 points wide. Three
+consequences, all of which had already been observed separately without the
+common cause being identified:
+
+1. **`max_risk = 0.10` is raw risk 0.297.** A threshold stated in calibrated
+   units is 3× looser than it reads. This is why §26 found the gate saturating
+   at 0.20 — above 0.133 nothing can ever be rejected.
+2. **The occlusion prior was 3× too small for its own gate.** A prior of 0.10
+   raw shifts calibrated risk by 0.0038. §27's sweep found the crossover between
+   0.30 and 0.60, matching the 0.297 prediction.
+3. **Calibrating the critic destroyed its risk discrimination.** Measured:
+   wiring the calibrator cut risk spread across candidates **0.516 → 0.081**,
+   6.4×. Doing the correct thing to the *numbers* made them powerless over the
+   *ranking*.
+
+The third is the structural one. In a weighted sum the risk term can only move
+the total by `w_risk × 0.044`, while clearance spreads 0.893 across candidates —
+so risk is outvoted by an order of magnitude no matter how well calibrated it is.
+
+### W_RISK is identifiable after all — in [0, 2], not [6, 25]
+
+Two predictions made from the above, both refuted by their own measurement, and
+recorded because the second refutation is what produced the answer.
+
+**Prediction 1: λ reorders around 11.** Swept to 25 — `w_risk` 6, 9, 11, 13, 15,
+25 gave *identical* results on every metric. Refuted.
+
+**Prediction 2: the ranking is rarely exercised, so no weight can matter.** The
+feasible set has ≥2 candidates on **44.5%** of decisions and all six on 25%.
+Refuted.
+
+Measuring the cost terms directly across *feasible* candidates instead of
+guessing a third time:
+
+| term | mean spread | median | non-zero on |
+|---|---|---|---|
+| `risk.total` | **0.0073** | 0.0036 | 98% |
+| clearance, raw | 1.2309 | 1.1266 | 88% |
+| clearance, **saturated at 2 m** | 0.2383 | **0.0000** | **34%** |
+| `planner_score` | 0.0047 | 0.0002 | 100% |
+
+Two corrections fall out. The 0.081 figure quoted above is the *critic's*
+`expected_collisions`, a different quantity from the filter's calibrated
+`risk.total`, whose spread is 0.0073 — 11× smaller. And clearance **saturates**:
+`min(clearance, 2.0)` is tied across all candidates on 66% of decisions, so on
+those the ranking reduces to risk against the planner prior.
+
+That fixes the crossover at `w_risk × 0.0073 = 0.0095`, i.e. **w_risk ≈ 1.3** —
+and the entire swept range 6–25 was above it, in the region where risk already
+dominates and scaling it further cannot change an argmin. Sweeping *downward*:
+
+| w_risk | EGO | other | brakes | clearance | completion | mean risk |
+|---|---|---|---|---|---|---|
+| 0.0 | 0 | 27 | 97 | 1.18 m | 40.0% | 0.0517 |
+| **0.5** | **0** | **20** | **94** | **1.83 m** | 39.9% | 0.0513 |
+| **1.0** | **0** | **20** | **94** | **1.83 m** | 39.8% | 0.0507 |
+| 2.0 | 1 | 21 | 105 | 1.43 m | 38.3% | 0.0545 |
+| 4.0 | 1 | 21 | 105 | 1.38 m | 38.3% | 0.0550 |
+| 10.0 *(shipped)* | 1 | 21 | 105 | 1.37 m | 38.3% | 0.0549 |
+
+The transition lands between 1.0 and 2.0, as the arithmetic predicted. **The
+shipped `w_risk = 10.0` is an order of magnitude above the identifiable region**,
+and moving to 1.0 removes the ego-fault collision, takes other-fault 21 → 20,
+and raises clearance 1.37 → 1.83 m (+34%) at a 1.5 pp completion cost.
+
+So "W_RISK is inert" was the fourth unreachable-measurement result in this
+document, and the most expensive: three separate explanations were offered for
+it (constant terms, then λ too small, then ranking unexercised) before anyone
+measured the term spreads that settle it.
+
+### Multiplicative ranking, measured
+
+| form | EGO | other | brakes | clearance | completion | jerk | mean risk |
+|---|---|---|---|---|---|---|---|
+| additive | 1 | 21 | 105 | 1.37 m | 38.3% | 1.24 | 0.0549 |
+| multiplicative | 1 | 21 | 105 | **1.43 m** | 38.3% | 1.29 | 0.0545 |
+
+Marginally better clearance, marginally worse jerk, everything else identical —
+a wash at `w_risk = 10`. That is consistent with the diagnosis rather than
+against it: at a weight that already saturates the ordering, changing the
+*form* of the combination cannot reorder either. The multiplicative form's value
+is that it has no weight to mis-set, which is worth more than the 0.06 m.
+
+### Multiplicative combination
+
+    score = clearance · (1 − calibrated_risk)
+
+Risk becomes a **fraction of a plan's value** rather than a fixed subtraction
+from it, which is scale-free: a narrow calibrated range still expresses itself
+proportionally, because the multiplier acts on a term that is not narrow. It
+also has the right limit behaviour — risk → 1 zeroes the plan however much
+clearance it has, whereas an additive score lets a roomy trajectory buy its way
+past danger.
+
+Available as `SafetyFilter(multiplicative=True)`, default off.
+
+---
+
 ## Retractions
 
 Nine causal explanations were committed and then refuted by their own
