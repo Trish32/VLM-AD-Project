@@ -220,3 +220,48 @@ def scale_trajectory(traj, scale: float):
         w = 0.0 if step[j] < 1e-9 else (s_ - lo) / step[j]
         out[i] = path[j] + w * (path[j + 1] - path[j])
     return out
+
+
+def scale_for_risk_budget(traj, scene, budget: float, calibrator,
+                          risk_fn, floor: float = 0.35, iters: int = 10) -> float:
+    """Largest speed scale whose CALIBRATED risk stays within `budget`.
+
+    Replaces the hand-set response curve (RISK_FREE / RISK_SATURATE /
+    MAX_REDUCTION) with a constrained solve. Those three constants encoded a
+    risk/speed trade-off nobody stated; this states one number -- the budget --
+    and derives the response from the risk model itself.
+
+    Why not fit the curve instead, the way the Platt map was fitted: Platt had
+    labels, because observed collision frequency is a ground truth to regress
+    predictions onto. A response curve has no such target -- there is no
+    "correct" speed scale in the data, only outcomes under whatever policy
+    produced them. Grid-searching the constants over the same ten scenes they
+    are then evaluated on is how `max_risk = 0.60` was chosen, and that number is
+    not trustworthy for exactly this reason.
+
+    So the curve is removed rather than fitted. Bisection is on a monotone
+    quantity (slower plans cover less ground and carry less risk), and `floor`
+    is retained so the solve can never return a stop -- a response reaching zero
+    is a stop by another name, and stopping in traffic is what produced 30
+    rear-end collisions here.
+    """
+    t = np.asarray(traj, dtype=np.float64)
+    if len(t) == 0:
+        return 1.0
+
+    def risk_at(scale: float) -> float:
+        return float(calibrator(risk_fn(scale_trajectory(t, scale))))
+
+    if risk_at(1.0) <= budget:
+        return 1.0
+    if risk_at(floor) > budget:
+        return floor                       # budget unmeetable: floor, then the
+                                           # filter's emergency path decides
+    lo, hi = floor, 1.0
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        if risk_at(mid) <= budget:
+            lo = mid
+        else:
+            hi = mid
+    return lo

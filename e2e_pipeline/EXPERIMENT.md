@@ -203,6 +203,41 @@ Against the *original* (the fair comparison — both uncalibrated) the structura
 change wins on every axis. Against a threshold swept on the same 10 scenes it is
 evaluated on, it loses.
 
+## 11. Response curve removed, not fitted
+
+Fitting the curve the way the Platt map was fitted is not possible: Platt had
+labels (observed collision frequency is a ground truth to regress onto), a
+response curve has none -- there is no "correct" speed scale in the data. Grid
+searching `RISK_FREE` / `RISK_SATURATE` / `MAX_REDUCTION` over the same ten
+scenes they are evaluated on is how `max_risk = 0.60` was chosen, and that is
+precisely why 0.60 is not trustworthy.
+
+So the curve was removed. With risk calibrated, the response follows by
+inverting it: bisect for the largest speed scale whose calibrated risk stays
+within a budget epsilon. Three hand-set constants become one stated requirement.
+
+| config | ego-fault | other | clearance | brakes | completion | jerk |
+|---|---|---|---|---|---|---|
+| no response (filter only) | 0 | 8 | 1.47 m | 99 | 43.5% | 1.60 |
+| hand-set curve | 0 | 16 | 1.44 m | 85 | 35.4% | **1.18** |
+| risk budget ε=0.02 | 0 | **34** | 1.06 m | 96 | **17.3%** | 1.30 |
+| risk budget ε=0.05 | 0 | 18 | **1.57 m** | 90 | 28.4% | 1.81 |
+| **risk budget ε=0.10** | 0 | **5** | 1.47 m | 90 | **43.8%** | 1.34 |
+| risk budget ε=0.20 | 0 | 8 | 1.47 m | 99 | 43.5% | 1.54 |
+
+**A tighter risk budget produces 7× more collisions.** ε=0.02 gives 34
+other-fault collisions and 17.3% completion; ε=0.10 gives 5 and 43.8%. This is
+the clearest statement of the pathology in the whole log: caution, applied to a
+policy already too cautious, is not merely wasteful but actively unsafe, because
+a slow ego in traffic gets struck.
+
+The sweep is reported as a trade-off curve rather than a recommendation.
+Declaring ε=0.10 "best" because it tops this table would be selecting a constant
+on the same ten scenes it is scored on -- the `max_risk = 0.60` mistake again.
+What ε *should* be is a policy statement about acceptable collision probability;
+what this table shows is what each choice costs, and that the relationship is not
+monotone in the direction intuition expects.
+
 ---
 
 ## Retractions
