@@ -436,6 +436,73 @@ still subtract options instead.** Once a plan has been selected, the only
 remaining authority is braking — which is why the emergency brake is the right
 thing to keep at the end of the pipeline, and a graded response is not.
 
+## 16. Making the residual generalise: regularisation, gating, and rollout error
+
+§13 found the learned residual overfits across scenes. Three remedies tried in
+order, each measured on a scene-level split **and over a rollout**, because
+one-step error is not what a world model is used for — it compounds.
+
+### L2, shrinkage, dropout, gating
+
+Trained on scenes 5–9, tested on 0–4 (physics baseline: 1-step 0.128 m/s,
+3 s rollout 0.141 m):
+
+| regulariser | 1-step | Δ | **rollout** | **Δ** |
+|---|---|---|---|---|
+| none (raw fit) | 0.1457 | −13.5% | 0.191 | **−35.7%** |
+| L2 only | 0.1284 | −0.0% | 0.144 | −2.0% |
+| output shrinkage only | 0.1392 | −8.4% | 0.185 | **−30.8%** |
+| dropout 0.2 | 0.1290 | −0.5% | 0.145 | −3.0% |
+| dropout 0.5 | 0.1291 | −0.6% | 0.145 | −3.2% |
+| L2 + shrink | 0.1284 | −0.0% | 0.143 | −1.4% |
+| L2 + shrink + dropout | 0.1284 | +0.0% | 0.143 | −1.0% |
+| L2 + shrink + gate | 0.1285 | −0.1% | 0.144 | −2.1% |
+
+**The rollout column is the one that matters, and it is far worse.** A 13.5%
+one-step degradation compounds to **35.7%** over 3 s. Measuring only per-step
+error would have understated the damage by 2.6×.
+
+**No arm is positive.** L2 is the most effective regulariser and dropout close
+behind, but both work by driving the correction to zero — the model becomes the
+prior. Output shrinkage alone is insufficient (−30.8% rollout). Gating adds
+nothing once the output is already ≈0, because there is nothing left to gate.
+
+The pattern is exhaustive rather than suggestive: **every setting strong enough
+to prevent harm is strong enough to erase the effect.** There is no middle
+ground on ten scenes.
+
+### Online system identification instead
+
+If the error differs *by scene* rather than by feature — physics RMSE is
+0.128 m/s on scenes 0–4 and 0.279 on 5–9 — then stop fitting a function and
+estimate a parameter that tracks the current scene. `OnlineIDMGain` does RLS on
+one number, IDM's deceleration gain, evaluated causally (gain from earlier steps
+only):
+
+| scene | n | gain | physics → adapted | Δ |
+|---|---|---|---|---|
+| 0 | 4203 | 0.988 | 0.0870 → 0.0870 | −0.0% |
+| 3 | 1939 | 0.810 | 0.0848 → 0.0845 | +0.4% |
+| 4 | 564 | **0.383** | 0.1680 → 0.1666 | +0.9% |
+| 5 | 494 | **0.307** | 0.5071 → 0.5042 | +0.6% |
+| 7 | 591 | 1.000 | 0.8626 → 0.8626 | +0.0% |
+| **mean** | | | 0.2540 → 0.2535 | **+0.2%** |
+
+It identifies real per-scene structure — gains of 0.31 and 0.38 mean IDM
+over-brakes by 3× in those scenes — and converts it into **+0.2%**. The
+parameter is right and the leverage is not.
+
+### Verdict
+
+Learned residuals are abandoned. Both `ResidualDynamics` and `OnlineIDMGain` are
+kept, disabled, and honest: `residual()` returns exactly zero untrained, and
+`gain = 1` recovers the unmodified prior. The physics prior is the better
+predictor and nothing measured here beats it.
+
+What would change the answer is data, not method: the offline fit needs scenes
+that share error structure, and the online estimator needs a scene where IDM is
+wrong enough for a 3× gain correction to matter.
+
 ---
 
 ## Retractions

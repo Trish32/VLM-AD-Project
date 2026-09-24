@@ -64,10 +64,17 @@ def main():
                         ([5, 6, 7, 8, 9], [0, 1, 2, 3, 4], 'train 5-9 / test 0-4')):
         Xtr, Ytr = collect(nusc, tr)
         Xte, Yte = collect(nusc, te)
-        m = ResidualDynamics().fit(Xtr, Ytr, epochs=400)
         print(f'\n  {tag}   train {len(Xtr)}  test {len(Xte)}')
-        print('   train:', m.evaluate(Xtr, Ytr).describe())
-        print('   TEST :', m.evaluate(Xte, Yte).describe())
+        for label, kw, gate in (
+                ('unregularised, ungated', dict(weight_decay=0.0, shrink=0.0), False),
+                ('regularised, ungated   ', dict(weight_decay=1e-2, shrink=1e-2), False),
+                ('regularised + GATED    ', dict(weight_decay=1e-2, shrink=1e-2), True)):
+            m = ResidualDynamics().fit(Xtr, Ytr, epochs=400, **kw)
+            m._gated = gate
+            phys = float(np.sqrt((Yte ** 2).mean()))
+            res = float(np.sqrt(((Yte - m.residual(Xte, gate=gate)) ** 2).mean()))
+            imp = 1.0 - res / phys if phys > 0 else 0.0
+            print(f'   {label}  physics {phys:.4f} -> {res:.4f} m/s   {imp:+.1%}')
 
 
 if __name__ == '__main__':
