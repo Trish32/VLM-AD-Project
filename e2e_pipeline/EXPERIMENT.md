@@ -550,6 +550,50 @@ corridor rather than FlashOcc, deliberately: replacing both at once would leave
 the difference unattributable between them, and only the detector has saved
 output covering all ten scenes.
 
+## 18. Calibration ablation re-run under live perception
+
+§14 measured the calibration against the GT oracle, and the Platt map was
+*fitted* on GT-based rollouts. Live detections have a different risk
+distribution, so the map could easily have been out of distribution. Re-run:
+
+| config | ego-fault | other | clearance | brakes | completion | ECE |
+|---|---|---|---|---|---|---|
+| GT raw @0.60 | 0 | 7 | 1.60 m | 106 | 43.4% | 0.162 |
+| GT calibrated @0.10 | 0 | 7 | 1.58 m | 105 | 43.5% | **0.038** |
+| LIVE raw @0.60 | 0 | 26 | 1.12 m | 125 | 34.7% | 0.183 |
+| LIVE raw @0.05 | 0 | 35 | 0.83 m | 163 | 20.6% | 0.013 |
+| LIVE calibrated @0.10 | 0 | 26 | 1.12 m | 125 | 34.7% | **0.042** |
+| LIVE calibrated @0.05 | 0 | 35 | **1.37 m** | 140 | 26.7% | 0.022 |
+| **LIVE calibrated @0.20** | 0 | **25** | 1.25 m | **124** | **35.9%** | 0.047 |
+
+**The calibration transfers.** In-loop ECE falls 0.183 → 0.042 under live
+detections, a 4.4× improvement almost identical to the 4.3× seen under GT. A map
+fitted on oracle rollouts corrects a detector's over-confidence too, which says
+the over-confidence is a property of the analytic risk computation rather than
+of the perception feeding it.
+
+**The 6× equivalence holds exactly.** LIVE calibrated @0.10 and LIVE raw @0.60
+produce *identical* results on every column — 26 collisions, 1.12 m, 125 brakes,
+34.7%. The same threshold correspondence measured under GT in §14.
+
+**It helps most where the threshold is tight.** At 0.05, calibrating the input
+alone takes clearance 0.83 → **1.37 m** (+65%), completion 20.6% → 26.7% and
+brakes 163 → 140, at unchanged collisions. That is the §14 finding reproduced
+under harder conditions: the threshold was never the whole story, the input's
+scale was.
+
+### What survives and what does not
+
+§14's *relative* conclusions survive contact with real perception. The *absolute*
+numbers do not: 7 collisions become 26, completion 43.5% → 34.7%. Every figure
+in §§7–16 is an oracle figure and should be read as optimistic.
+
+The ECE caveat from §14 repeats more starkly here: LIVE raw @0.05 has the best
+ECE in the table (0.013) and is the worst configuration in it — 35 collisions,
+0.83 m clearance, 163 brakes, 20.6% completion. A pipeline braking itself into
+paralysis predicts near-zero risk and is correct, which is exactly why ECE must
+never be read alone.
+
 ---
 
 ## Retractions
