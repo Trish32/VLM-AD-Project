@@ -107,11 +107,13 @@ class TrackCovarianceTracker:
                  pos_noise: float = 0.5,
                  vel_noise: float = 1.0,
                  score_floor: float = 0.1,
+                 calibrated_noise: bool = True,
                  max_misses: int = 3) -> None:
         self.accel_noise = float(accel_noise)
         self.pos_noise = float(pos_noise)
         self.vel_noise = float(vel_noise)
         self.score_floor = float(score_floor)
+        self.calibrated_noise = bool(calibrated_noise)
         self.max_misses = int(max_misses)
         self._tracks: dict[int, _TrackState] = {}
 
@@ -133,10 +135,35 @@ class TrackCovarianceTracker:
                              [dt3 / 2, 0, dt2, 0],
                              [0, dt3 / 2, 0, dt2]], dtype=np.float64)
 
+    # Measured against nuScenes annotations over 11,730 matched BEVFormer
+    # detections: sigma = FLOOR + SLOPE / score fits 2.7x better than the pure
+    # reciprocal this used to assume (weighted RMS residual 0.084 m vs 0.225 m).
+    #
+    # The reciprocal was wrong three ways, and only the first was obvious:
+    #   * MAGNITUDE -- it under-estimated error by 1.28x to 1.98x across every
+    #     score bin, so the tracker was over-confident about every box and every
+    #     risk number downstream inherited that.
+    #   * SHAPE -- the under-estimate GREW with score (1.28 low, 1.98 high), so
+    #     the curve was too steep, not merely too low.
+    #   * FLOOR -- a score-1.0 detection still carries ~0.6 m of position error.
+    #     A pure b/s model cannot express an irreducible floor at any b.
+    #
+    # Direction was right, though: score genuinely predicts error, 2.04 m in the
+    # lowest bin against 0.99 m in the highest.
+    #
+    # Reproduce with `python e2e_pipeline/covariance_calibration.py`.
+    MEAS_FLOOR_M = 0.609
+    MEAS_SLOPE_M = 0.466
+
     def _R(self, score: float) -> np.ndarray:
         s = max(float(score), self.score_floor)
-        sp = (self.pos_noise / s) ** 2
-        sv = (self.vel_noise / s) ** 2
+        if self.calibrated_noise:
+            sigma_p = self.MEAS_FLOOR_M + self.MEAS_SLOPE_M / s
+            sp = sigma_p ** 2
+            sv = (sigma_p * self.vel_noise / max(self.pos_noise, 1e-6)) ** 2
+        else:
+            sp = (self.pos_noise / s) ** 2
+            sv = (self.vel_noise / s) ** 2
         return np.diag([sp, sp, sv, sv])
 
     # -- main entry point ---------------------------------------------------

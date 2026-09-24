@@ -171,3 +171,30 @@ def test_ray_occlusion_marks_behind_obstacles_only():
     u = ray_occlusion(obs, origin=(-20.0, -20.0), res=0.4)
     assert u[85, 50], 'cells behind the wall should be unknown'
     assert not u[60, 50], 'cells in front of the wall should be observed'
+
+
+def test_calibrated_covariance_has_an_irreducible_floor():
+    """A score-1.0 box still carries ~0.6 m of error; b/s cannot express that."""
+    from e2e_pipeline.uncertainty import TrackCovarianceTracker
+    t = TrackCovarianceTracker(calibrated_noise=True)
+    sigma_best = float(np.sqrt(t._R(1.0)[0, 0]))
+    assert sigma_best > 0.5, 'calibrated sigma lost the measured error floor'
+    # and it must still shrink with confidence
+    assert float(np.sqrt(t._R(0.3)[0, 0])) > sigma_best
+
+
+def test_calibrated_covariance_tracks_measured_error():
+    """Within 25% of measurement in every score bin (was 1.28-1.98x off)."""
+    from e2e_pipeline.uncertainty import TrackCovarianceTracker
+    t = TrackCovarianceTracker(calibrated_noise=True)
+    for score, measured in ((0.32, 2.036), (0.62, 1.450), (0.93, 0.987)):
+        pred = float(np.sqrt(t._R(score)[0, 0]))
+        assert 0.75 < pred / measured < 1.25, f'score {score}: {pred:.2f} vs {measured:.2f}'
+
+
+def test_uncalibrated_path_still_available():
+    """The old model stays reachable so the comparison can be reproduced."""
+    from e2e_pipeline.uncertainty import TrackCovarianceTracker
+    old = float(np.sqrt(TrackCovarianceTracker(calibrated_noise=False)._R(0.93)[0, 0]))
+    new = float(np.sqrt(TrackCovarianceTracker(calibrated_noise=True)._R(0.93)[0, 0]))
+    assert old < new, 'the old model should be the over-confident one'
