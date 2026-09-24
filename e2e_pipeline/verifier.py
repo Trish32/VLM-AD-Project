@@ -30,11 +30,14 @@ WHAT THIS CANNOT CHECK, AND WHY
   carries a posted limit, so `speed_limit_mps` is a configured constant, not a
   measurement. Treat a violation as "exceeded the limit we told it", not "broke
   the law".
-* **Yielding** needs lane topology and right-of-way reasoning -- who is on the
-  priority road, who arrived first. nuScenes gives lane geometry but no
-  precedence relation, so implementing `yield` here would be a guess wearing a
-  rule's name. The stop-line case IS implemented, because `stop_line` is real
-  map geometry; general yielding is declared out of scope rather than faked.
+* **Yielding and stop lines** are NOT implemented. Yielding needs lane topology
+  and right-of-way precedence -- who is on the priority road, who arrived first
+  -- which nuScenes does not encode, so coding it here would be a guess wearing
+  a rule's name. Stop-line geometry DOES exist in the map expansion and could be
+  used, but is not wired up: the red-light check tests only that the plan comes
+  to rest within the horizon, not that it stops before a specific line. An
+  earlier version of this docstring claimed the stop-line case was implemented.
+  It was not, and the claim is corrected here rather than quietly deleted.
 * **Red-light state** comes from the VLM, not the map. nuScenes annotates traffic
   light *geometry* but not *bulb colour*, so this check is only as good as the
   upstream perception it is nominally independent of. That is a real limit on its
