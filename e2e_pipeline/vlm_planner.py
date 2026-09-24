@@ -53,6 +53,38 @@ from .scene import SceneRepresentation
 COMMAND_INDEX = {'right': 0, 'left': 1, 'straight': 2}
 INDEX_COMMAND = {v: k for k, v in COMMAND_INDEX.items()}
 
+#: Upstream's threshold on the FINAL future waypoint's lateral offset, metres.
+#: nuscenes_converter.py:386 -- `if ego_fut_trajs[-1][0] >= 2: Turn Right`, in the
+#: LiDAR frame where x is lateral-right. This package is (forward, left), so the
+#: sign flips; the magnitude and the "final step only" rule are upstream's.
+COMMAND_LATERAL_THRESHOLD_M = 2.0
+
+
+def command_from_future(future_xy) -> int:
+    """Drive command implied by an ego-frame future trajectory.
+
+    nuScenes carries no navigation command, so `gt_ego_fut_cmd` is DERIVED from
+    where the ego actually went -- upstream thresholds the final future
+    waypoint's lateral offset at +-2 m. This reproduces that rule so the
+    candidate set is conditioned the same way the anchors were clustered
+    (`tools/kmeans/kmeans_plan.py` buckets by `gt_ego_fut_cmd` before running
+    k-means, so anchors for command c only describe trajectories of that class).
+
+    Parameters
+    ----------
+    future_xy : (T, 2) waypoints in the ego frame, (forward, left) metres.
+    """
+    import numpy as _np
+    f = _np.asarray(future_xy, dtype=_np.float64)
+    if f.ndim != 2 or f.shape[0] == 0:
+        return COMMAND_INDEX['straight']
+    lateral_left = float(f[-1, 1])
+    if lateral_left <= -COMMAND_LATERAL_THRESHOLD_M:
+        return COMMAND_INDEX['right']
+    if lateral_left >= COMMAND_LATERAL_THRESHOLD_M:
+        return COMMAND_INDEX['left']
+    return COMMAND_INDEX['straight']
+
 # Structured output: Ollama constrains generation to this schema, which removes
 # the prose-parsing failure mode entirely. Verified working on qwen2.5vl:7b.
 INTENT_SCHEMA = {

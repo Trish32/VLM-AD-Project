@@ -289,7 +289,13 @@ class SafetyFilter:
 
         # --- gate 4: probabilistic risk -----------------------------------
         if risk_model is not None:
-            v.risk = risk_model.evaluate(traj, scene.agents, dt=self.dt)
+            # `freespace` was not passed here, so `RiskModel.unknown_prior` was
+            # silently dropped for every candidate the filter ever scored. The
+            # prior was reachable only from the counterfactual call in
+            # closed_loop, which does not gate anything -- so the conservative
+            # unknown-space prior could not affect a decision at any value.
+            v.risk = risk_model.evaluate(traj, scene.agents, dt=self.dt,
+                                         freespace=fs)
             if v.risk.total > lim.max_risk:
                 v.feasible = False
                 v.reasons.append(f"risk{v.risk.total:.3f}>{lim.max_risk}")

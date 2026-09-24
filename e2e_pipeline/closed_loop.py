@@ -192,6 +192,7 @@ class ClosedLoopRunner:
                                           n_positive=11)
         self.risk_pred: list = []        # for closed-loop ECE monitoring
         self.risk_outcome: list = []
+        self.commands: list = []         # command actually used, per step
 
         self.latent_model = latent_model or KinematicWorldModel(
             wheelbase=(config or LoopConfig()).wheelbase)
@@ -199,6 +200,18 @@ class ClosedLoopRunner:
         self.planner = planner
         self.cfg = config or LoopConfig()
         self.safety = safety or SafetyFilter(dt=self.cfg.dt)
+        # `veto_unknown=False` is documented as "price unknown space softly
+        # instead of rejecting it", but it only ever reached the FlashOcc
+        # adapter's masking of `traversable`. The gate that actually rejects is
+        # FeasibilityLimits.allow_unknown, which it never touched -- so turning
+        # the veto off left gate 1 removing every occlusion-entering candidate,
+        # and the soft prior had nothing left to price. Measured: candidates
+        # enter unknown space on 20% of steps with the six straight anchors and
+        # 84% with the full vocabulary, and not one of them survived to gate 4.
+        if not self.cfg.veto_unknown and not self.safety.limits.allow_unknown:
+            from dataclasses import replace as _replace
+            self.safety.limits = _replace(self.safety.limits,
+                                          allow_unknown=True)
         if tracker is None:
             # Match the filter's noise model to what this world can actually
             # deliver, rather than assuming detector-grade error everywhere.
@@ -234,7 +247,14 @@ class ClosedLoopRunner:
         return expected_calibration_error(np.array(p), np.array(o),
                                           n_bins, 'quantile')
 
-    def run(self, command: int = 1) -> tuple[list[StepRecord], dict]:
+    def run(self, command: int | None = 1) -> tuple[list[StepRecord], dict]:
+        """`command=None` derives the command per step from the world's route.
+
+        A fixed int keeps the old behaviour and is what every existing caller
+        passes, so no committed result moves. It is also the wrong default for a
+        20-step rollout through a scene where the ego turns: one command for the
+        whole rollout cannot describe a route that changes.
+        """
         cfg = self.cfg
         route = np.asarray(self.world.route(), dtype=np.float64)
 
@@ -303,7 +323,11 @@ class ClosedLoopRunner:
                                         timestamp=t)
 
             t0 = time.perf_counter()
-            candidates, scores = self.planner(scene, command)
+            cmd_k = (command if command is not None
+                     else (self.world.command_at(t)
+                           if hasattr(self.world, 'command_at') else 2))
+            self.commands.append(int(cmd_k))
+            candidates, scores = self.planner(scene, cmd_k)
             lat['planner'] = (time.perf_counter() - t0) * 1000
 
             # Rollout ranking runs BEFORE the safety filter, not after. Placed
@@ -560,6 +584,35 @@ class GTWorldModel:
             return 0.0
         return float(np.linalg.norm(self._route[1] - self._route[0]) / self.dt)
 
+    def command_at(self, t: float, horizon: int = 6) -> int:
+        """Drive command implied by the logged ego future at time `t`.
+
+        nuScenes ships no navigation command: upstream DERIVES `gt_ego_fut_cmd`
+        from where the ego actually went, thresholding the final future
+        waypoint's lateral offset at +-2 m. This is the same rule against the
+        same source, so it is the closest thing to "what the route planner would
+        have said" that this dataset supports.
+
+        It is an ORACLE, and calling it anything else would overstate it -- a
+        real stack gets the command from a navigation layer, not from the
+        recording. It is the right default here because the alternative in place
+        was a hardcoded 'straight', which is also an oracle and additionally a
+        wrong one whenever the ego turned.
+        """
+        from .vlm_planner import command_from_future
+        smp = self.samples
+        if not smp:
+            return 2
+        k = int(np.clip(round(t / self.dt), 0, len(smp) - 1))
+        fr = smp[k]
+        c, s = np.cos(-fr['yaw']), np.sin(-fr['yaw'])
+        fut = []
+        for h in range(1, horizon + 1):
+            j = min(k + h, len(smp) - 1)
+            d = smp[j]['xy'] - fr['xy']
+            fut.append([c * d[0] - s * d[1], s * d[0] + c * d[1]])
+        return command_from_future(fut)
+
     def camera_at(self, t: float) -> dict:
         """Front camera at the LOGGED pose, with an exact world->image matrix.
 
@@ -761,15 +814,33 @@ def diffusiondrive_anchor_planner(anchor_npy: str, dt: float = 0.5,
     its endpoint looks. In closed loop that deadlocked the car -- once stopped,
     every candidate demanded ~16 m/s^2 off the line, nothing was feasible, and
     the filter emergency-braked forever.
+
+    THE COMMAND ARGUMENT WAS ACCEPTED AND DISCARDED. This built
+    `DrivingIntent(command='straight')` unconditionally, ignoring the `command`
+    the runner passed it. Nobody noticed because every caller passed 2, which
+    IS 'straight' -- the hardcode agreed with the argument by coincidence, so
+    the bug was invisible until a caller wanted something else.
+
+    One caller did. `fit_calibration.py` sweeps `cmd in (0, 1, 2)` to widen the
+    calibration set; all three produced identical straight-ahead rollouts, so
+    the Platt fit saw a third of the variation it was written to sample, each
+    configuration triplicated.
+
+    The anchors are clustered PER COMMAND upstream (`kmeans_plan.py` buckets on
+    `gt_ego_fut_cmd` before k-means), so command 2's six anchors describe only
+    trajectories that went straight -- 0.5 m of lateral endpoint spread against
+    19.9 m for the full vocabulary. Hardcoding it did not merely ignore an
+    argument; it discarded 97% of the candidate geometry the file contains.
     """
-    from .vlm_planner import DrivingIntent, intent_conditioned_planner
+    from .vlm_planner import INDEX_COMMAND, DrivingIntent, intent_conditioned_planner
 
     inner = intent_conditioned_planner(anchor_npy, dt=dt, max_accel=max_accel)
 
     def plan(scene: SceneRepresentation, command: int):
         # Hold current speed, with a floor so a stopped car can pull away.
         v = max(scene.ego.speed, 2.0) if speed_condition else scene.ego.speed
-        intent = DrivingIntent(command='straight', target_speed_mps=v)
+        name = INDEX_COMMAND.get(int(command), 'straight')
+        intent = DrivingIntent(command=name, target_speed_mps=v)
         return inner(scene, intent)
     return plan
 

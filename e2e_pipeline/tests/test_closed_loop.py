@@ -242,3 +242,67 @@ def test_critic_risk_can_see_the_tracker_and_calibrator():
                            calibrator=PlattCalibrator(a=0.457, b=-2.333,
                                                       fitted=True, n_positive=11))
     assert wired.tracker is not None and wired.calibrator is not None
+
+
+# --- the drive command ------------------------------------------------------
+
+
+def test_command_from_future_matches_upstream_rule():
+    """+-2 m lateral at the FINAL waypoint, indices [right, left, straight]."""
+    from e2e_pipeline.vlm_planner import COMMAND_INDEX, command_from_future
+    straight = [[5.0 * (t + 1), 0.0] for t in range(6)]
+    left = [[5.0 * (t + 1), 0.6 * (t + 1)] for t in range(6)]      # ends +3.6
+    right = [[5.0 * (t + 1), -0.6 * (t + 1)] for t in range(6)]    # ends -3.6
+    assert command_from_future(straight) == COMMAND_INDEX['straight']
+    assert command_from_future(left) == COMMAND_INDEX['left']
+    assert command_from_future(right) == COMMAND_INDEX['right']
+    # exactly at the threshold counts as a turn, as upstream's >= does
+    assert command_from_future([[10.0, 2.0]]) == COMMAND_INDEX['left']
+    assert command_from_future([[10.0, 1.9]]) == COMMAND_INDEX['straight']
+
+
+def test_anchor_planner_honours_the_command_it_is_given():
+    """It accepted `command` and hardcoded 'straight', so 0/1/2 were identical.
+
+    fit_calibration.py swept cmd in (0,1,2) to widen the calibration set and got
+    three copies of the same rollout.
+    """
+    from e2e_pipeline.closed_loop import diffusiondrive_anchor_planner
+    from e2e_pipeline.freespace import FreeSpace
+    from e2e_pipeline.scene import EgoState, SceneRepresentation
+    nx, ny = 200, 120
+    scene = SceneRepresentation(
+        agents=[], ego=EgoState(speed=8.0), timestamp=0.0,
+        freespace=FreeSpace(traversable=np.ones((nx, ny), bool),
+                            obstacle=np.zeros((nx, ny), bool),
+                            unknown=np.zeros((nx, ny), bool),
+                            esdf=np.full((nx, ny), 5.0, np.float32),
+                            origin=(-10.0, -30.0), res=0.5))
+    p = diffusiondrive_anchor_planner(
+        'diffusiondrive_planner/data/kmeans/kmeans_plan_6.npy', dt=0.5)
+    ends = {}
+    for c in (0, 1, 2):
+        cands, _ = p(scene, c)
+        ends[c] = np.asarray(cands, float)[:, -1, 1]      # lateral endpoints
+    assert not np.allclose(ends[0], ends[2]), 'command 0 planned as straight'
+    assert not np.allclose(ends[1], ends[2]), 'command 1 planned as straight'
+    # and they must go opposite ways: 0 is right (negative left), 1 is left
+    assert ends[0].mean() < ends[2].mean() < ends[1].mean()
+
+
+def test_run_can_derive_the_command_per_step():
+    """command=None asks the world; an int stays fixed, preserving old runs."""
+    class TurningWorld(StubWorld):
+        def command_at(self, t, horizon=6):
+            return 1 if t > 0.6 else 2
+
+    from e2e_pipeline.closed_loop import ClosedLoopRunner, LoopConfig
+    r = ClosedLoopRunner(TurningWorld(), _straight_planner(),
+                         LoopConfig(max_steps=6, initial_speed=8.0))
+    r.run(command=None)
+    assert set(r.commands) == {1, 2}, f'command never varied: {r.commands}'
+
+    r2 = ClosedLoopRunner(TurningWorld(), _straight_planner(),
+                          LoopConfig(max_steps=6, initial_speed=8.0))
+    r2.run(command=2)
+    assert set(r2.commands) == {2}, 'an explicit command must not be overridden'

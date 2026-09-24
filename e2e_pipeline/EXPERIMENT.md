@@ -1268,6 +1268,80 @@ variance, while velocity — assumed, never measured, and wrong by 12× — gove
 
 ---
 
+## 27. The drive command was hardcoded, and it caused every collision
+
+`diffusiondrive_anchor_planner` accepted a `command` argument and built
+`DrivingIntent(command='straight')` regardless. Invisible for the usual reason:
+every caller passed `2`, and `2` IS straight, so the hardcode agreed with the
+argument by coincidence.
+
+It matters because the anchors are clustered PER COMMAND upstream
+(`kmeans_plan.py` buckets on `gt_ego_fut_cmd` before k-means), so command 2's six
+anchors describe only trajectories that went straight — **0.5 m of lateral
+endpoint spread against 19.9 m for the full vocabulary.** The pipeline was
+choosing among six near-identical straight lines.
+
+### How often that was wrong
+
+Deriving the command from the logged ego future by upstream's own rule (±2 m
+lateral offset at the final waypoint, `nuscenes_converter.py:386`):
+
+| | steps | share |
+|---|---|---|
+| straight | 159 | 79.5% |
+| left | 21 | 10.5% |
+| right | 20 | 10.0% |
+
+**20.5% of steps were commanded wrongly.** Concentrated, not spread: scene 6 is
+16/20 right-turn, scene 0 is 10/20 left.
+
+### Scene 6 is the scene with all the collisions
+
+| arm | EGO | other | brakes | clearance | completion | divergence |
+|---|---|---|---|---|---|---|
+| hardcoded straight, scene 6 | 0 | **7** | 12 | 0.00 m | 18.2% | 8.0 m |
+| derived per step, scene 6 | 0 | **0** | **1** | **1.05 m** | **44.6%** | **2.1 m** |
+| hardcoded straight, all 10 | 0 | **7** | 105 | 1.58 m | 43.5% | 6.6 m |
+| derived per step, all 10 | 0 | **0** | **71** | **2.03 m** | **49.9%** | **4.4 m** |
+
+§20 established that all 7 collisions were scene 6, steps 13–19, ego speed 0.0.
+Scene 6 is 80% right-turn and was planned as straight throughout. Giving it the
+right command takes collisions to **zero**, brakes 12 → 1, clearance 0.00 →
+1.05 m and completion 18.2% → 44.6%.
+
+Across all ten scenes: collisions 7 → 0, brakes −32%, clearance +28%,
+divergence −33%.
+
+### This re-roots §§19–21 rather than contradicting them
+
+The mechanism in §20 was right — over-braking → falls behind → recorded agents
+drive into the stopped ego. What was missing is why it braked. Commanded
+straight through a right turn, every candidate ran off the drivable corridor
+(measured min-clearance 0.00 m), the filter rejected all six, and the emergency
+brake fired until the car stopped. Divergence was the mechanism; the command was
+the cause.
+
+So "every collision came from ego divergence" (§19) stands, and "the divergence
+is self-inflicted over-braking" (§20) stands, but neither is the root. The
+absorbing-state result (§25, 0% recovery) was measured on rollouts that were
+being steered off-route by construction and should be re-run.
+
+### What this is not
+
+`command_at` reads the LOGGED future, so it is an oracle. A real stack takes the
+command from a navigation layer. The honest claim is not "the planner is good
+now" — it is that **the planner was being given the wrong instruction on a fifth
+of all steps**, and that the previous default was also an oracle and
+additionally a wrong one. `run(command=None)` opts in; an explicit int keeps the
+old behaviour so no committed result moves silently.
+
+Also caught: `fit_calibration.py` sweeps `cmd in (0, 1, 2)` to widen the Platt
+calibration set. All three produced identical rollouts, so the fit saw a third
+of the variation it was written to sample, each configuration triplicated. The
+calibration should be refitted.
+
+---
+
 ## Retractions
 
 Nine causal explanations were committed and then refuted by their own
