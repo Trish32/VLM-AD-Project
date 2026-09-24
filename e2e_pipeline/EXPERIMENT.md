@@ -1527,6 +1527,58 @@ Available as `SafetyFilter(multiplicative=True)`, default off.
 
 ---
 
+## 30. End-to-end re-baseline under the current defaults
+
+Four defaults moved and each was measured alone, which is right for attribution
+and wrong for a headline: the combination had never been run. Canonical config,
+ten scenes × 20 steps, derived commands, `w_risk = 1.0`.
+
+| config | EGO | other | brakes | clearance | completion | jerk | divergence | risk | lat p50 | lat p95 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| GT, pinned | **0** | **0** | 41 | 1.94 m | 52.5% | 1.13 | 0.0 m | 0.0236 | 23.7 ms | 63.2 ms |
+| GT, free | **0** | **0** | 78 | **2.05 m** | 49.2% | **1.00** | 4.5 m | 0.0229 | 23.4 ms | 67.9 ms |
+| LIVE, pinned | **0** | **0** | 70 | 1.73 m | 52.5% | 1.27 | 0.0 m | 0.0540 | 27.9 ms | 69.0 ms |
+| LIVE, free | **0** | 20 | 94 | 1.83 m | 39.8% | 1.32 | 5.2 m | 0.0507 | 27.0 ms | 69.1 ms |
+| *GT, free, cmd=straight* | 0 | 7 | 106 | 1.60 m | 43.7% | 1.36 | 6.6 m | 0.0287 | 23.5 ms | 68.0 ms |
+| *LIVE, free, cmd=straight* | 0 | 25 | 125 | 1.24 m | 34.2% | 1.42 | 7.6 m | 0.0551 | 25.9 ms | 69.3 ms |
+
+Against the old default, holding everything else at current values:
+
+| | GT free | LIVE free |
+|---|---|---|
+| other-fault collisions | **7 → 0** | 25 → 20 (−20%) |
+| emergency brakes | 106 → 78 (−26%) | 125 → 94 (−25%) |
+| clearance | 1.60 → 2.05 m (+28%) | 1.24 → 1.83 m (+48%) |
+| route completion | 43.7% → 49.2% (+5.5 pp) | 34.2% → 39.8% (+5.6 pp) |
+| jerk | 1.36 → 1.00 (−26%) | 1.42 → 1.32 (−7%) |
+| divergence | 6.6 → 4.5 m (−32%) | 7.6 → 5.2 m (−32%) |
+
+**Zero ego-fault collisions in every configuration, and zero collisions of any
+kind under ground truth.** Under the pinned ego — the mode that removes the
+deviation confound §19 identified — both perception sources are clean.
+
+Latency is 23–28 ms p50 and 63–69 ms p95 for the full stack, so the planning
+loop runs comfortably inside its 2 Hz budget with ~15× headroom at p50.
+
+### The absorbing state survives
+
+| | excursions past 3 m | recovery rate | longest unrecovered |
+|---|---|---|---|
+| GT | 8 | **0%** | 16 steps |
+| LIVE | 8 | **0%** | 16 steps |
+
+This is the one §25 result the command fix does **not** rescue, and it was
+plausible that it would — divergence was being driven by planning straight
+through turns, so a correct command might have made excursions recoverable. It
+did not. Excursions are 33% rarer and 32% shorter, and **still not one of them
+returns below 1.5 m**. Divergence remains a one-way boundary; what changed is
+how often the ego crosses it, not what happens after.
+
+That is the honest limit of this stack: it now drives without hitting anything
+under ground truth, and it still cannot recover once it falls behind.
+
+---
+
 ## Retractions
 
 Twelve causal explanations were committed and then refuted by their own
