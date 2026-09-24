@@ -7,6 +7,19 @@ that failed their own tests are recorded as retractions rather than edited out.
 Unless stated, the setup is: **10 nuScenes-mini scenes × 20 steps = 200 closed-loop
 steps**, DiffusionDrive anchors, ego seeded from the logged frame-0 speed.
 
+### Defaults changed, and when
+
+Anything measured before the listed commit used the old value. These are the
+only behavioural defaults that have moved; everything else added by this log
+ships off by default.
+
+| default | old | new | commit | why |
+|---|---|---|---|---|
+| `SafetyFilter.w_risk` | 10.0 | **1.0** | §29 | 10.0 sat in the saturated region of the ranking; 1.0 is better on six metrics, worse on jerk |
+| `TrackCovarianceTracker.calibrated_noise` | — | **on for detector worlds** | §26 | fitted to 11,730 detections; GT worlds keep their declared noise |
+| `LiveDetectionAdapter.associate` | — | **True** | §26 | the fallback track id hashed the frame token, so 0.0% of tracks survived a step |
+| `diffusiondrive_anchor_planner` command | hardcoded `'straight'` | **honours the argument** | §27 | it discarded the command it was passed; caused every collision in the project |
+
 > ## ⚠ Read §19 before §§6–18
 >
 > **Every collision count taken under a simulated ego measures deviation from the
@@ -1454,19 +1467,32 @@ That fixes the crossover at `w_risk × 0.0073 = 0.0095`, i.e. **w_risk ≈ 1.3**
 and the entire swept range 6–25 was above it, in the region where risk already
 dominates and scaling it further cannot change an argmin. Sweeping *downward*:
 
-| w_risk | EGO | other | brakes | clearance | completion | mean risk |
-|---|---|---|---|---|---|---|
-| 0.0 | 0 | 27 | 97 | 1.18 m | 40.0% | 0.0517 |
-| **0.5** | **0** | **20** | **94** | **1.83 m** | 39.9% | 0.0513 |
-| **1.0** | **0** | **20** | **94** | **1.83 m** | 39.8% | 0.0507 |
-| 2.0 | 1 | 21 | 105 | 1.43 m | 38.3% | 0.0545 |
-| 4.0 | 1 | 21 | 105 | 1.38 m | 38.3% | 0.0550 |
-| 10.0 *(shipped)* | 1 | 21 | 105 | 1.37 m | 38.3% | 0.0549 |
+| w_risk | EGO | other | brakes | clearance | completion | jerk | mean risk |
+|---|---|---|---|---|---|---|---|
+| 0.0 | 0 | 27 | 97 | 1.18 m | 40.0% | — | 0.0517 |
+| **0.5** | **0** | **20** | **94** | **1.83 m** | 39.9% | — | 0.0513 |
+| **1.0** | **0** | **20** | **94** | **1.83 m** | **39.8%** | 1.32 | **0.0507** |
+| 2.0 | 1 | 21 | 105 | 1.43 m | 38.3% | — | 0.0545 |
+| 4.0 | 1 | 21 | 105 | 1.38 m | 38.3% | — | 0.0550 |
+| 10.0 *(was shipped)* | 1 | 21 | 105 | 1.37 m | 38.3% | **1.24** | 0.0549 |
 
 The transition lands between 1.0 and 2.0, as the arithmetic predicted. **The
-shipped `w_risk = 10.0` is an order of magnitude above the identifiable region**,
-and moving to 1.0 removes the ego-fault collision, takes other-fault 21 → 20,
-and raises clearance 1.37 → 1.83 m (+34%) at a 1.5 pp completion cost.
+shipped `w_risk = 10.0` was an order of magnitude above the identifiable
+region.**
+
+**This is not a safety-for-progress trade, and describing it as one was an
+error.** `w_risk = 1.0` is better than 10.0 on ego-fault (0 vs 1), other-fault
+(20 vs 21), braking (94 vs 105), clearance (1.83 vs 1.37 m), completion
+(39.8% vs 38.3%) **and** mean risk (0.0507 vs 0.0549). The first write-up of
+this table called the 1.5 pp completion difference a cost; it is a gain, the
+sign was inverted.
+
+The one metric that does get worse is jerk, **1.24 → 1.32 (+6.5%)** — a comfort
+cost, not a safety one, and it was missing from the sweep's output until the
+dominance claim was checked rather than asserted. Six metrics better, one worse.
+
+**Default changed to `w_risk = 1.0`.** Every closed-loop result committed before
+0f5f147 was produced at 10.0.
 
 So "W_RISK is inert" was the fourth unreachable-measurement result in this
 document, and the most expensive: three separate explanations were offered for
@@ -1503,7 +1529,7 @@ Available as `SafetyFilter(multiplicative=True)`, default off.
 
 ## Retractions
 
-Nine causal explanations were committed and then refuted by their own
+Twelve causal explanations were committed and then refuted by their own
 measurements:
 
 1. **"mAP ≈ 0 means perception is broken."** It was a benchmark artefact: three
@@ -1536,11 +1562,28 @@ measurements:
    term, out-spreading risk 14×. The price is unidentifiable because *progress*
    has 125× less spread than clearance, which is a different claim (§26).
 
+10. **"The planner never proposes driving into an occlusion."** It proposes them
+    on **20% of steps** with the original six anchors and 84% with the full
+    vocabulary. The "0 of 6 waypoints in unknown" that supported this across
+    three investigations was measured on the *post-filter selected plan*, so it
+    described gate 1 and not the planner (§27).
+11. **"W_RISK is unidentifiable."** Third explanation offered for it, and also
+    wrong. It is identifiable in [0, 2]; the sweeps ran over 6–25, entirely
+    inside the region where risk already dominates the argmin (§29).
+12. **"`w_risk = 1.0` buys safety for 1.5 pp of completion."** A sign error.
+    Completion is 39.8% at 1.0 against 38.3% at 10.0 — 1.5 pp *better*. 1.0 wins
+    on six metrics and loses only on jerk, +6.5% (§29).
+
 The pattern in the first five: a real defect was found, correctly identified as
-real, and then over-credited with the observed symptom. The pattern in 6–9 is
+real, and then over-credited with the observed symptom. The pattern in 6–11 is
 different and worse — a number was reported from a path that could not have
 produced a different answer, so the null result carried no information. Each was
 caught only by asking what would have to change for the measurement to move.
+
+12 is a third kind and the most embarrassing: the measurement was reachable, it
+ran, it produced the right numbers, and the write-up inverted the sign of a
+difference it had computed correctly. No amount of instrumentation catches that
+one — only reading the table against the sentence describing it.
 
 ## Open
 

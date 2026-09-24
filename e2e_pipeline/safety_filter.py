@@ -195,6 +195,26 @@ class SafetyFilter:
         survivors.  The planner term keeps the learned preference in play — among
         equally safe options we want the one DiffusionDrive actually liked, not the
         one that hugs the centre of the widest gap.
+
+        `w_risk` DEFAULTED TO 10.0 AND WAS MEASURED, NOT CHOSEN, ONLY LATER.
+        Across feasible candidates the calibrated `risk.total` spreads 0.0073
+        while the planner term spreads 0.0095, so risk overtakes the prior at
+        w_risk ~ 1.3 and everything above that is the same argmin. 10.0 sat an
+        order of magnitude inside that saturated region, which is why three
+        successive sweeps over 6-25 reported the weight as inert.
+
+        Swept downward (10 scenes, 20 steps, live perception, derived commands):
+
+            w_risk  EGO  other  brakes  clearance  completion  jerk  mean risk
+               0.0    0     27      97     1.18 m       40.0%     -      0.0517
+               1.0    0     20      94     1.83 m       39.8%  1.32      0.0507
+              10.0    1     21     105     1.37 m       38.3%  1.24      0.0549
+
+        1.0 is better on safety, braking, clearance, completion AND mean risk;
+        the single cost is 6.5% more jerk. It is NOT a safety-for-progress
+        trade, which is how the 10.0 result was first described here and was
+        wrong. Default changed to 1.0; results committed before 0f5f147 used
+        10.0 and are labelled as such in EXPERIMENT.md.
     footprint_lattice : (n_long, n_lat) sample points across the ego rectangle used
         for the swept-volume check.  3x2 corners-plus-centre is enough at 0.4 m grid
         resolution; raise it for finer grids.
@@ -203,7 +223,7 @@ class SafetyFilter:
     def __init__(self,
                  limits: FeasibilityLimits | None = None,
                  dt: float = 0.5,
-                 w_risk: float = 10.0,
+                 w_risk: float = 1.0,
                  w_clearance: float = 1.0,
                  w_planner: float = 2.0,
                  footprint_lattice: tuple[int, int] = (5, 3),
