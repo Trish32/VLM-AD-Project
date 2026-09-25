@@ -24,7 +24,13 @@ MR = 0.60
 CONFIGS = [
     ('baseline',      dict()),
     ('+verifier',     dict(use_verifier=True)),
-    ('+ttc-gate',     dict(use_structured=True)),
+    # RETIRED AND NOW INERT. §8 measured this arm doing real damage (27
+    # interventions, completion 29.3% against 43.2%) and it was switched off by
+    # making `structured_gate` require `enabled=True`, which the closed loop
+    # does not pass. So this arm now reproduces the baseline row exactly, and
+    # §8's table describes a different code state. Kept, renamed, so nobody
+    # reads a baseline row as a gate result.
+    ('+ttc-gate (RETIRED, inert)', dict(use_structured=True)),
     ('+shadow',       dict(use_shadow=True)),
     ('+world-model',  dict(use_world_model=True)),
     ('+all',          dict(use_verifier=True, use_structured=True,

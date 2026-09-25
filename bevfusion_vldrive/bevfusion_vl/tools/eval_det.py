@@ -57,6 +57,13 @@ def main():
     ap.add_argument('--device', default='cpu')
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--out', default='/Users/trish/VLMProjects/bevfusion_vldrive/bevfusion_vl/eval_out_det')
+    # The split was hardcoded to mini_val (2 scenes, 81 samples). The
+    # e2e_pipeline baseline runs 10 scenes, so a 2-scene detector could not
+    # be compared against it -- and on that overlap nothing collides under
+    # any detector including GT, so it discriminates nothing.
+    ap.add_argument('--split', default='mini_val')
+    ap.add_argument('--no-eval', action='store_true',
+                    help='skip DetectionEval; it only supports mini_val/val')
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -68,7 +75,7 @@ def main():
     ld = NuScenesMITLoader(C.DATAROOT)
     nusc = ld.nusc
     eval_cfg = config_factory('detection_cvpr_2019')
-    tokens = ld.sample_tokens('mini_val')
+    tokens = ld.sample_tokens(args.split)
     if args.limit:
         tokens = tokens[:args.limit]
 
@@ -97,7 +104,10 @@ def main():
                     'use_map': False, 'use_external': False}, 'results': results}
     rp = os.path.join(args.out, 'results_nusc.json')
     json.dump(sub, open(rp, 'w'))
-    ev = DetectionEval(nusc, config=eval_cfg, result_path=rp, eval_set='mini_val',
+    if args.no_eval:
+        print(f"\n===== wrote {len(results)} samples to {rp} (eval skipped) =====")
+        return
+    ev = DetectionEval(nusc, config=eval_cfg, result_path=rp, eval_set=args.split,
                        output_dir=args.out, verbose=False)
     metrics = ev.main(render_curves=False)
     print(f"\n===== mAP: {metrics['mean_ap']:.4f}  NDS: {metrics['nd_score']:.4f} =====")

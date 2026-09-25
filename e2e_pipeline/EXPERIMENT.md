@@ -1663,9 +1663,102 @@ sources are kept and selectable — `LivePerceptionWorldModel(source='bevformer'
 
 ---
 
+## 32. BEVFusion as the perception backbone — the gap is detection quality
+
+§31 left two questions open: whether a better detector removes the false
+positives that §31 blamed for collisions, and whether the 7-class restriction
+that appeared to fix them was real. Both are now answered, and the second answer
+retracts the first finding.
+
+BEVFusion does **not** output more classes — all three detectors use the same
+nuScenes 10-class taxonomy. What it has is precision:
+
+| detector | modality | mAP | NDS |
+|---|---|---|---|
+| BEVFormer-tiny (the live arm all along) | camera | 0.2334 | 0.2255 |
+| BEVFusion-robust (ADLab head) | camera + LiDAR | 0.4675 | 0.4952 |
+| BEVFusion-MIT (TransFusion head) | camera + LiDAR | **0.578** | **0.575** |
+
+Its saved output covered mini_val only — 2 scenes — and on that overlap **every
+arm including GT scores zero collisions**, so it discriminates nothing. Reporting
+a tie from it would have been the §28 mistake again. `eval_det.py` gained
+`--split`, and 323 mini_train frames were inferred (~4 s/frame on MPS) to make
+the comparison run on the same ten scenes as everything else.
+
+| arm | mode | EGO | other | brakes | clearance | completion | agents |
+|---|---|---|---|---|---|---|---|
+| **GT oracle** | free | 0 | **0** | 78 | 2.05 m | 49.2% | 42.3 |
+| BEVFormer-tiny 10-cls (cam) | free | 0 | **20** | 94 | 1.83 m | 39.8% | 39.8 |
+| BEVFormer-tiny 7-cls (cam) | free | 0 | 8 | 88 | 2.04 m | 47.0% | 33.6 |
+| Sparse4D 7-cls real-id (cam) | free | 1 | 15 | 83 | 1.74 m | 47.8% | 20.7 |
+| **BEVFusion-MIT 10-cls (L+C)** | free | 2 | **1** | **77** | 1.52 m | **48.3%** | 28.5 |
+| BEVFusion-MIT 7-cls (L+C) | free | 3 | 2 | 76 | 1.44 m | 49.3% | 24.7 |
+
+Other-fault collisions **20 → 1**, emergency brakes 94 → 77 against the oracle's
+78, completion 39.8% → 48.3% against the oracle's 49.2%. On three of four
+headline metrics a real detector lands **at the ground-truth oracle**.
+
+### It retracts §31's 7-class result
+
+Under BEVFormer-tiny, dropping `barrier` / `traffic_cone` /
+`construction_vehicle` cut collisions 20 → 8. Under BEVFusion the same
+restriction makes things **worse**: other-fault 1 → 2, ego-fault 2 → 3,
+clearance 1.52 → 1.44 m.
+
+So the 7-class benefit was a workaround for one weak detector's false positives,
+not a property of those classes. §31 declined to ship it as a default on the
+grounds that "delete the obstacle classes and the safety metric improves" is the
+shape of an artefact; that caution was right, and this is the measurement that
+settles it.
+
+### Two caveats, neither small
+
+**BEVFusion introduces 2 ego-fault collision steps** where every camera-only arm
+had zero, and clearance drops 1.83 → 1.52 m. Pinned, it is 0/0 like everything
+else, so this lives in the free-running divergence regime — but it is a real
+regression in the arm that otherwise looks best, and it is unexplained.
+
+**It is camera + LiDAR.** BEVFormer-tiny and Sparse4D are camera-only, so part
+of this is a modality result rather than a better-detector result. The defensible
+claim is *the perception gap in this stack is dominated by detection quality and
+LiDAR fusion closes most of it*, not *camera perception is fine with a better
+backbone*. Testing the second needs a strong camera-only detector, which this
+repo does not currently have exported.
+
+## 33. The structured intermediate representation: built, and unconsumed
+
+Status, because it is easy to mistake for a live feature:
+
+| piece | state |
+|---|---|
+| `StructuredScene` / `SceneFacts` / `ObjectFact` | built, unit-tested |
+| `classify_intent`, `time_to_collision` (CPA), `turn_observable` | built, unit-tested |
+| `build_structured` | built, called when `use_structured=True` |
+| `LaneContext` / `LaneFacts` / `build_lane_facts` / `lane_conflict_gate` | built, **zero callers** |
+| `structured_gate` | **retired** — returns `[]` unless `enabled=True`, which nothing passes |
+
+Measured: `use_structured=True` gives `structured_fired = 0` and no reasons. The
+flag exists, can be set, and does nothing.
+
+This is the eighth instance of the §28 pattern with one honest difference: it is
+**deliberate**. §8 measured the TTC gate degrading every metric (27
+interventions, completion 29.3% against 43.2%) and it was switched off on
+purpose. A component measured, found harmful, and disabled is a result. The
+problem is only that it is indistinguishable from an accidental no-op unless
+something says so, which
+`test_layer_reachability.py::test_structured_gate_is_deliberately_inert_and_says_so`
+now does.
+
+Also corrected: `tools/rebaseline.py` still carried a `+ttc-gate` arm that now
+reproduces the baseline row exactly, while §8's table shows it doing damage —
+the script and the table describe different code states. Renamed to
+`+ttc-gate (RETIRED, inert)` so a baseline row cannot be read as a gate result.
+
+---
+
 ## Retractions
 
-Twelve causal explanations were committed and then refuted by their own
+Thirteen causal explanations were committed and then refuted by their own
 measurements:
 
 1. **"mAP ≈ 0 means perception is broken."** It was a benchmark artefact: three
@@ -1706,7 +1799,11 @@ measurements:
 11. **"W_RISK is unidentifiable."** Third explanation offered for it, and also
     wrong. It is identifiable in [0, 2]; the sweeps ran over 6–25, entirely
     inside the region where risk already dominates the argmin (§29).
-12. **"`w_risk = 1.0` buys safety for 1.5 pp of completion."** A sign error.
+12. **"Dropping barrier / traffic_cone / construction_vehicle halves
+    collisions."** True of BEVFormer-tiny (20 → 8) and false of the classes.
+    Under BEVFusion the same restriction makes things worse (1 → 2 other-fault),
+    so it was a workaround for one weak detector's false positives (§32).
+13. **"`w_risk = 1.0` buys safety for 1.5 pp of completion."** A sign error.
     Completion is 39.8% at 1.0 against 38.3% at 10.0 — 1.5 pp *better*. 1.0 wins
     on six metrics and loses only on jerk, +6.5% (§29).
 

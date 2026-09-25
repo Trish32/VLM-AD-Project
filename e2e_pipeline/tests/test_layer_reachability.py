@@ -130,3 +130,36 @@ def test_multiplicative_ranking_changes_the_cost():
     mul = SafetyFilter(limits=lim, multiplicative=True)._evaluate(
         0, traj, scene, rm, 0.5).cost
     assert not np.isclose(add, mul), 'multiplicative ranking is a no-op'
+
+
+def test_structured_gate_is_deliberately_inert_and_says_so():
+    """`use_structured` is a no-op, and that is intentional -- pin it as such.
+
+    The TTC gate was measured actively harmful (27 interventions, completion
+    29.3% against 43.2%) and retired: `structured_gate` returns nothing unless
+    `enabled=True`, and the closed loop does not pass it. So the flag exists,
+    can be set, and does nothing.
+
+    That is a legitimate outcome -- measured, found harmful, switched off -- but
+    it is indistinguishable from the seven ACCIDENTAL no-ops in EXPERIMENT.md
+    Sec 28 unless something states the difference. This test is that statement:
+    if a future change makes the flag live again, it fails and the author has to
+    decide deliberately.
+    """
+    off, _, _ = _run(OccludedWorld(), use_structured=False)
+    on, _, _ = _run(OccludedWorld(), use_structured=True)
+    assert off.structured_fired == 0
+    assert on.structured_fired == 0, (
+        'use_structured now fires -- the TTC gate was retired for degrading '
+        'every metric; re-enabling it needs a measurement, not a flag flip')
+
+    # the REPRESENTATION must still be built and correct, since the retirement
+    # was of the gate, not of the structured view it reads
+    from e2e_pipeline.planner.structured import build_structured
+    w = OccludedWorld()
+    from e2e_pipeline.scene import EgoState, SceneRepresentation
+    scene = SceneRepresentation(agents=w.agents_at(0, np.zeros(2), 0.0),
+                                ego=EgoState(speed=8.0), timestamp=0.0,
+                                freespace=w.freespace_at(0, np.zeros(2), 0.0))
+    st = build_structured(scene)
+    assert st.objects, 'the structured decoder produced no facts'
