@@ -1,211 +1,172 @@
 # e2e_pipeline — modular end-to-end AD stack
 
 The integration layer between the perception ports and the planner: dense + object
-perception fused into one scene representation, uncertainty plumbed end to end, and a
-safety gate that can veto the learned plan.
+perception fused into one scene representation, uncertainty measured rather than
+assumed, and a safety gate that can veto the learned plan.
 
-![closed-loop rollout](assets/closed_loop_scene-0796.gif)
+![closed-loop rollout](assets/closed_loop_scene-0916.gif)
 
-*scene-0796, 24 closed-loop steps at 15.3 m/s. **Left:** the front camera with 3-D
-agent boxes and the chosen plan laid on the road surface. **Right:** the occupancy
-branch reduced to what the planner consumes — drivable / unknown / obstacle — with all
-six DiffusionDrive candidates coloured by the filter's verdict. **Below:** the five
-metric families, live. The run ends with 0 collisions, 3 emergency brakes in 24 steps
-and 67.8% route completion.*
+*scene-0916, 24 closed-loop steps. **Left:** front camera with 3-D agent boxes and
+the chosen plan on the road surface. **Right:** FlashOcc's full 18-class Occ3D
+output — not the drivable/obstacle reduction the planner consumes — with all six
+DiffusionDrive candidates coloured by the filter's verdict. **Below:** the five
+metric families, live.*
 
-One thing in that picture is not literally true, and the overlay says so rather than
-hiding it. The loop simulates ego motion, so the ego drifts off the logged trajectory
-— and nuScenes has no camera frame from a pose the car never occupied. The overlay
-projects world-frame geometry through the **logged** camera: the projection is exact,
-the viewpoint is logged, and the gap between the two poses is printed in the panel
-header (`sim ego 19.2 m away`). Watch it grow across the clip. That number is also
-why the teal corridor slides off-centre in the occupancy panel late in the run.
+This scene is 16 of 24 steps a right turn, and the pipeline used to plan it as
+`straight` because the drive command was hardcoded. Fixing that is the single
+largest change in the project's history:
 
+| scene-0916 | hardcoded `straight` | derived per step |
+|---|---|---|
+| collisions | **8** | **0** |
+| min clearance | 0.00 m | **2.19 m** |
+| route completion | 12.6% | **35.1%** |
+| emergency brakes | 19/24 | **10/24** |
+
+One thing in the picture is not literally true, and the overlay says so rather
+than hiding it. The loop simulates ego motion, so the ego drifts off the logged
+trajectory — and nuScenes has no camera frame from a pose the car never occupied.
+The overlay projects world geometry through the **logged** camera: the projection
+is exact, the viewpoint is logged, and the gap is printed in the header
+(`sim ego 1.6 m away`).
 
 ## Layout
 
-```
-e2e_pipeline/
-├── scene.py          # unified ego-frame scene representation: Agent (+ Kalman
-│                     #   covariance, + QCNet forecast), EgoState, footprint
-│                     #   geometry. Frame contract lives here.
-├── freespace.py      # FlashOcc (200,200,16,18) -> traversable / obstacle /
-│                     #   unknown rasters + ESDF. Height band, Occ3D semantics,
-│                     #   unknown-is-not-free.
-├── uncertainty.py    # CV Kalman over Sparse4D track ids (detector score ->
-│                     #   measurement noise) + QCNet Laplace scale -> collision
-│                     #   probability, closed form (non-central chi-squared).
-├── safety_filter.py  # four gates: drivable area, swept-footprint collision,
-│                     #   KBM dynamic feasibility, probabilistic risk.
-│                     #   Emergency brake when nothing survives.
-├── vlm_planner.py    # the bridge: Qwen2.5-VL -> DrivingIntent -> DiffusionDrive
-│                     #   anchors. Validation, IntentCache (rate decoupling),
-│                     #   per-step speed conditioning.
-├── pipeline.py       # per-frame orchestration behind Protocols for the four
-│                     #   networks; frame conversion; occupancy rate decoupling.
-├── closed_loop.py    # ClosedLoopRunner (pipeline -> controller -> KBM),
-│                     #   GTWorldModel oracle, planner stand-ins.
-├── metrics.py        # safety (SAT on oriented boxes) / route completion /
-│                     #   comfort / prediction ADE-FDE / latency p50-p95.
-├── visualize.py      # closed-loop rollout -> animated GIF
-└── tests/            # 95 tests; each gate isolated by a test that fails it
-```
+`scene.py` unified ego-frame representation (frame contract lives here) ·
+`freespace.py` Occ3D volume → traversable/obstacle/unknown + ESDF + BEV semantics ·
+`temporal_occlusion.py` unknown as "not observed in N frames", world-frame ·
+`uncertainty.py` CV Kalman + calibrated score→covariance → collision probability ·
+`safety_filter.py` four gates + three-valued unknown handling ·
+`verifier.py` independent re-check between planning and control (8 rules) ·
+`world_model.py` latent rollout + critic · `vlm_planner.py` Qwen2.5-VL → intent →
+anchors · `calibration.py` Platt/ECE · `live_adapter.py` real detections +
+association · `pipeline.py` per-frame orchestration behind Protocols ·
+`closed_loop.py` runner + GT/live/FlashOcc worlds · `metrics.py` five families ·
+`divergence_metrics.py` divergence-aware safety · `visualize.py` → GIF ·
+`tests/` **212 tests**
 
-## End-to-end architecture
+## Architecture
 
 ```
                          6 x surround-view RGB
-                                   │
                 ┌──────────────────┴──────────────────┐
                 ▼                                     ▼
-        Sparse4D v3                              FlashOcc
-   3-D boxes + track ids                  (200,200,16,18) occupancy
-        (LiDAR frame)                              │
-                │  rotate -pi/2                    ▼  freespace.py
-                │                        traversable / obstacle /
-                │                          unknown + ESDF
+          Sparse4D v3                             FlashOcc
+     3-D boxes + track ids              (200,200,16,18) Occ3D semantics
+       (LiDAR, rotate -pi/2)          ──► freespace.py + temporal_occlusion.py
+                │                         traversable / obstacle / unknown
+                │                         + ESDF + BEV class map
                 └──────────────────┬──────────────────┘
                                    ▼
-                          scene.py  —  SceneRepresentation
-                     one ego frame: +x fwd, +y left, metres
-                   agents (+Kalman cov, +forecast) │ free space │ ego
+                    scene.py — SceneRepresentation
+              one ego frame: +x fwd, +y left, metres
+          agents (+Kalman cov, +forecast) │ free space │ ego
                                    │
          ┌─────────────────────────┼─────────────────────────┐
          ▼                         ▼                         ▼
    uncertainty.py            vlm_planner.py            safety_filter.py
-  Kalman cov  + QCNet     Qwen2.5-VL -> DrivingIntent   drivable area
-  Laplace loc/scale/pi    {command, target_speed,       collision (swept)
-        │                  light, hazard, conf}         dynamics (KBM)
-        │                          │ validated, cached  risk  ◄──┐
-        │                          ▼                       ▲     │
-        │            DiffusionDrive anchors ──────────────►│     │
-        │              K candidate trajectories            │     │
-        └──────────── collision probability ───────────────┴─────┘
-                                   │
+  Kalman cov (fitted      Qwen2.5-VL -> intent      1 drivable area
+  score->sigma) + QCNet   + route-derived command   1b unknown, graded
+  Laplace -> P(collision)          │                2 swept-footprint
+        │                          ▼                3 KBM feasibility
+        │        DiffusionDrive anchors (3 cmd x 6) 4 calibrated risk
+        └──────────────────────────┴──────────────────►│
                                    ▼  best feasible, else emergency brake
-                        controller (pure pursuit)
-                                   │
+                            verifier.py  (independent re-check, default-off)
                                    ▼
-                     kinematic bicycle model ──┐
-                                   ▲           │
-                                   └─ closed loop, ego state feeds back
+                    controller (pure pursuit) -> kinematic bicycle
+                                   └──── ego state feeds back ────┘
 ```
 
-Both perception branches run in parallel off the same cameras and converge on
-`SceneRepresentation`. **Everything downstream reads only that** — the planner,
-the risk model and the safety filter never touch a detector or an occupancy
-tensor directly, which is what makes the four networks swappable behind
-`Protocol`s.
+Both branches run off the same cameras and converge on `SceneRepresentation`.
+**Everything downstream reads only that**, which is what makes the four networks
+swappable behind `Protocol`s.
 
+- **The VLM cannot cause a collision.** It sits upstream of the safety filter, so
+  it narrows a set the filter already vetted.
+- **Latency stops being a defect.** Intent is slowly varying; `IntentCache` holds
+  it while planner and filter run at ~40 Hz.
+- **Two perception branches, neither redundant.** Sparse4D reports 10 scored
+  classes above threshold; FlashOcc marks a voxel occupied without naming it.
 
-Three properties the arrangement buys, none of which is free:
+### Frame contract
 
-- **The VLM cannot cause a collision.** It sits upstream of the safety filter,
-  so it narrows a candidate set the filter already vetted. Worst case it picks a
-  worse feasible plan, or is overruled into a brake.
-- **Latency stops being a defect.** Intent is slowly-varying, so `IntentCache`
-  holds it while the planner and filter run at 20-55 Hz. ~7 s per VLM call is
-  the cadence intent actually changes at.
-- **Two perception branches, neither redundant.** Sparse4D reports only the 10
-  scored nuScenes classes above threshold; FlashOcc marks a voxel occupied
-  without needing a name for it.
+Everything is **ego frame at the current keyframe**: `+x forward, +y left, +z up`,
+yaw CCW from `+x`, metres. Sparse4D is LiDAR-native and needs `−π/2`; FlashOcc is
+already ego-aligned. Getting the rotation wrong is **silent** — a 90° BEV rotation
+raises nothing and makes every clearance query answer about the wrong direction —
+so it is pinned by `test_pipeline.py::test_lidar_forward_maps_to_ego_forward`,
+which caught a sign error during development.
 
-## Frame contract
+## Results
 
-Everything in a `SceneRepresentation` is **ego frame at the current keyframe**:
-`+x forward, +y left, +z up`, yaw CCW from `+x`, metres.
+Canonical: 10 nuScenes-mini scenes × 20 steps, derived commands, `w_risk = 1.0`.
 
-Neither branch produces this natively:
+| config | ego-fault | other | brakes | clearance | completion | jerk | divergence | lat p50/p95 |
+|---|---|---|---|---|---|---|---|---|
+| GT, pinned | **0** | **0** | 41 | 1.94 m | 52.5% | 1.13 | 0.0 m | 24 / 63 ms |
+| GT, free | **0** | **0** | 78 | **2.05 m** | 49.2% | **1.00** | 4.5 m | 23 / 68 ms |
+| LIVE, pinned | **0** | **0** | 70 | 1.73 m | 52.5% | 1.27 | 0.0 m | 28 / 69 ms |
+| LIVE, free | **0** | 20 | 94 | 1.83 m | 39.8% | 1.32 | 5.2 m | 27 / 69 ms |
 
-| Branch | Native frame | Conversion |
-|---|---|---|
-| Sparse4D | LiDAR (`+x` right, `+y` forward) | rotate by `−π/2` |
-| FlashOcc | key-ego (camera-0's ego pose) | already ego-aligned |
+"LIVE" replaces the GT oracle with real BEVFormer detections. "Pinned" holds the
+ego on the logged trajectory, which removes the deviation confound described
+below and is the number to read for **safety**; "free" is the number to read for
+whether the policy **drives**.
 
-The `−π/2` matches the offset recorded in the bevformer / sparse4d / bevfusion logs.
-Getting it wrong is **silent** — a 90° BEV rotation raises nothing and simply makes
-every clearance query answer about the wrong direction. It is pinned by
-`tests/test_pipeline.py::test_lidar_forward_maps_to_ego_forward` rather than left to
-inspection, and that test caught a sign error during development.
+### What the closed loop surfaced
 
-In production, pass the transform derived from the sample's `calibrated_sensor` record
-via `meta["lidar_to_ego_yaw"]`; the module constant is a nominal default.
+- **The drive command was hardcoded to `straight`.** The planner accepted a
+  command argument and ignored it. Anchors are clustered *per command*, so this
+  discarded 97% of the candidate vocabulary — 0.5 m of lateral spread against
+  19.9 m — and steered the ego off-route on the 20.5% of steps that turn. It
+  caused **every collision in the project**. Deriving it: other-fault 7 → 0 (GT),
+  brakes −26%, clearance +28%, completion +5.5 pp, divergence −32%.
+- **Collision counts under a simulated ego measure deviation, not driving.** Pin
+  the ego to the log and collisions fall to zero under GT *and* live perception.
+  Metrics are now reported in matched divergence buckets, with recovery rate and
+  a per-decision counterfactual against the human's own trajectory.
+- **The covariance model was an untested assumption.** Fitting `σ(score)` against
+  11,730 detector-to-annotation matches replaced `σ = k/score` with
+  `σ = 0.609 + 0.466/score` (2.7× lower residual). Measuring velocity error
+  separately showed it is **independent of score** — and that it governs 87% of
+  propagated variance against position's 5.5%.
+- **7 of 11 "this component does nothing" results were unmeasurable, not inert.**
+  Six call sites silently dropped a keyword argument; one weight was swept
+  entirely outside its identifiable range. Guarded now by a required-argument
+  sentinel, `__post_init__` validation, and per-layer reachability tests.
+
+### Known limit
+
+Recovery rate is **0%** across 8 divergence excursions, under both perception
+sources. The command fix made excursions 33% rarer and 32% shorter and did not
+make a single one recoverable. Divergence remains a one-way boundary.
+
+Method, ablations and 12 retracted causal claims: **[EXPERIMENT.md](EXPERIMENT.md)**
+· per-change before/after: **[RESULT.md](RESULT.md)**
 
 ## Usage
 
 ```python
-from e2e_pipeline import E2EPipeline, EgoState, FreeSpaceExtractor, GridConfig
+from e2e_pipeline import E2EPipeline, EgoState
 
 pipe = E2EPipeline(
-    detector=my_sparse4d_adapter,     # -> (boxes (N,9) lidar, track_ids, scores, labels)
-    occupancy=my_flashocc_adapter,    # -> (semantics (200,200,16), mask_camera|None)
-    planner=my_diffusiondrive_adapter,# -> (candidates (K,T,2) ego, scores (K,))
-    forecaster=my_qcnet_adapter,      # -> {track_id: TrajectoryDistribution}  (optional)
-    occupancy_every=2,                # run the dense branch every Nth frame
+    detector=my_sparse4d_adapter,      # -> (boxes (N,9) lidar, track_ids, scores, labels)
+    occupancy=my_flashocc_adapter,     # -> (semantics (200,200,16), mask_camera|None)
+    planner=my_diffusiondrive_adapter, # -> (candidates (K,T,2) ego, scores (K,))
+    forecaster=my_qcnet_adapter,       # optional; CV fallback otherwise
+    occupancy_every=2,
 )
-
 out = pipe.step(images, meta, EgoState(speed=8.0), command=1)
-print(out.summary())
-trajectory = out.trajectory           # (T, 2) — feed to the controller
+trajectory = out.trajectory            # (T, 2) -> controller
 ```
 
-The four networks sit behind `Protocol`s. They are separately-trained ports that share
-no backbone or checkpoint and cost ~2–3 s/frame serially on an M3 Max, so a live
-single-process loop is not the useful artifact. Supply live adapters when the
-environments are up, or cached per-frame tensors when iterating on planning logic —
-the integration logic under test is identical either way.
-
-`forecaster` may be omitted, in which case every agent falls back to a
-constant-velocity rollout with honestly growing covariance.
-
-## Tests
+The four networks are separately-trained ports sharing no backbone, ~2–3 s/frame
+serially on an M3 Max, so supply live adapters or cached per-frame tensors — the
+integration logic under test is identical either way.
 
 ```bash
-conda run -n simple_bev_vldrive python -m pytest e2e_pipeline/tests/ -q
-```
-
-95 tests, ~0.7 s. Each gate has a test that isolates it: a candidate fine on every axis
-except one, which must be rejected for that one reason.
-
----
-
-## Results
-
-Planning stack runs at **20-55 Hz** against a GT world model. 95 tests.
-
-Four findings the closed loop surfaced, all invisible to unit tests:
-
-- **Risk-gate behaviour is set by noise calibration, not geometry.** The same
-  31 parked cars gave risk 0.475 with a detector-grade prior and 0.039 with a
-  GT-grade one.
-- **Collision geometry, not the compounding formula, was inflating risk.** A
-  circumscribed disc over-reports broadside separation by 3.14 m; the
-  rectangle support function took scene-0061 from `risk 1.000` to `0.43`.
-- **The rollout was seeded at a constant 5 m/s regardless of the scene.** Logged
-  frame-0 speeds in nuScenes-mini span 0 to 15.3 m/s, so the ego began every
-  rollout at the wrong speed and diverged from the drivable corridor on step one,
-  which then rejected every candidate. Seeding from the log instead:
-
-  | scene | brakes/24 | route | collisions | min clearance |
-  |---|---|---|---|---|
-  | 0796 | 12 → **3** | 7.3% → **67.8%** | 2 → **0** | 0.00 → **3.88 m** |
-  | 0061 | 24 → **12** | 7.4% → **55.5%** | 0 → **0** | 3.17 → 1.94 m |
-  | 0655 | 11 → **11** | 17.8% → **39.5%** | 2 → **0** | 0.00 → **2.60 m** |
-
-  Collisions went to zero on every scene where the ego actually drives. The
-  "conservative filter" reading of the old numbers was wrong: the filter was
-  reacting correctly to a badly initialised ego.
-- **Route completion was scoring parked cars at 94%.** scene-0553's logged route
-  is 4 cm of GPS jitter, and a `total > 0` guard divided by it happily — so a run
-  that emergency-braked all 24 steps scored 94.3% completion. Routes under
-  `MIN_ROUTE_M = 5.0` now report `completion: None`, not a number.
-
-Method, ablations, retractions and caveats: **[RESULT.md](RESULT.md)**.
-
-Before/after numbers for every change made to this pipeline, including the ones
-that made it worse: **[EXPERIMENT.md](EXPERIMENT.md)**.
-
-```bash
-python -m e2e_pipeline.visualize                  # scene-0796, the GIF above
-python -m pytest e2e_pipeline/tests/ -q
+conda run -n simple_bev_vldrive python -m pytest e2e_pipeline/tests/ -q   # 212 tests, ~2 s
+python -m e2e_pipeline.visualize --scene 6                # the GIF above
+python -m e2e_pipeline.final_baseline                     # the results table
 ```

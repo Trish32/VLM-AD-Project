@@ -72,6 +72,29 @@ H = HEAD_H + CAM_H + STATUS_H + TILE_H
 
 RANGE_M = 40.0                   # half-extent of the occupancy view, metres
 
+# Occ3D-nuScenes palette, byte-identical to FlashOcc's own `vis_occ.py` and to
+# Occupancy/FlashOcc/tools/visualize_occ.py::PALETTE. Copied rather than
+# imported because that module pulls in matplotlib, which this one does not need
+# and which costs ~1 s of import per invocation.
+OCC_PALETTE = [
+    (0, 0, 0), (255, 120, 50), (255, 192, 203), (255, 255, 0),
+    (0, 150, 245), (0, 255, 255), (200, 180, 0), (255, 0, 0),
+    (255, 240, 150), (135, 60, 0), (160, 32, 240), (255, 0, 255),
+    (139, 137, 137), (75, 0, 75), (150, 240, 80), (230, 230, 250),
+    (0, 175, 0), (255, 255, 255),
+]
+OCC_NAMES = [
+    'others', 'barrier', 'bicycle', 'bus', 'car', 'constr.veh',
+    'motorcycle', 'pedestrian', 'traffic_cone', 'trailer', 'truck',
+    'driveable', 'other_flat', 'sidewalk', 'terrain', 'manmade',
+    'vegetation', 'free',
+]
+FREE_ID = 17
+
+#: Drawn in the legend, in this order, when present in the frame. The full 18
+#: will not fit in a 461 px panel and most carry <0.1% of cells.
+LEGEND_PRIORITY = [11, 13, 14, 16, 15, 4, 10, 3, 7, 2, 6, 1, 8, 9, 12, 0]
+
 
 def _font(size=13, bold=False):
     names = (('/System/Library/Fonts/Menlo.ttc', 1 if bold else 0),
@@ -96,8 +119,38 @@ def _to_px(xy: np.ndarray) -> np.ndarray:
     return np.stack([BEV / 2 - xy[:, 1] * s, BEV / 2 - xy[:, 0] * s], axis=1)
 
 
+def _semantic_layer(fs) -> Image.Image | None:
+    """Full Occ3D class map as an image, or None if the source has no semantics.
+
+    WHY NOT THE THREE-COLOUR VERSION. Reducing to drivable / obstacle / unknown
+    is what the PLANNER consumes, and showing only that makes the panel a
+    picture of the reduction rather than of the occupancy. A sidewalk, a
+    vegetation bank and a parked truck are all "obstacle" to the filter and look
+    identical, so a viewer cannot tell a mis-segmentation from a real hazard,
+    and cannot see that the road surface is the only class the traversable mask
+    keeps out of six ground-ish ones.
+
+    Rendered by resampling the (nx, ny) label grid with NEAREST, never a smooth
+    filter: interpolating class ids invents classes, and the halfway point
+    between `car` (4) and `construction_vehicle` (5) is not a meaningful label.
+    """
+    sem = getattr(fs, 'semantics', None)
+    if sem is None:
+        return None
+    sem = np.asarray(sem)
+    lut = np.array(OCC_PALETTE, dtype=np.uint8)
+    rgb = lut[np.clip(sem, 0, len(OCC_PALETTE) - 1)]      # (nx, ny, 3)
+    # ego frame is +x forward / +y left; the panel is forward-up, left-left, so
+    # transpose to (row=y, col=x) then flip both axes.
+    rgb = np.transpose(rgb, (1, 0, 2))[::-1, ::-1]
+    return Image.fromarray(rgb, 'RGB').resize((BEV, BEV), Image.NEAREST)
+
+
 def _draw_freespace(draw: ImageDraw.ImageDraw, fs) -> None:
-    """Drivable / unknown as coarse tiles — full-resolution cells are invisible."""
+    """Drivable / unknown as coarse tiles — full-resolution cells are invisible.
+
+    The fallback for sources with no semantics (the synthetic corridor).
+    """
     step = 4
     res, ox, oy = fs.res, fs.origin[0], fs.origin[1]
     nx, ny = fs.traversable.shape
@@ -117,19 +170,70 @@ def _draw_freespace(draw: ImageDraw.ImageDraw, fs) -> None:
                             max(p0[0], p1[0]), max(p0[1], p1[1])], fill=c)
 
 
-def _poly(draw, pts_m, colour, width=2, closed=True):
+def _draw_occ_legend(d, fs, f) -> None:
+    """Colour key for the classes actually present, commonest first."""
+    sem = getattr(fs, 'semantics', None)
+    if sem is None:
+        d.text((10, BEV - 42), 'teal drivable   grey unknown   red obstacle',
+               font=f, fill=(86, 112, 112))
+        return
+    sem = np.asarray(sem)
+    present = [(c, float((sem == c).mean())) for c in LEGEND_PRIORITY]
+    present = [(c, s) for c, s in present if s > 0.004][:8]
+    rows, row, x = [], [], 0
+    for c, share in present:
+        w = 16 + int(d.textlength(OCC_NAMES[c], font=f)) + 8
+        if x + w > BEV - 16 and row:
+            rows.append(row)
+            row, x = [], 0
+        row.append(c)
+        x += w
+    if row:
+        rows.append(row)
+
+    # Dark backing: the palette contains pure white and pure yellow, so legend
+    # text drawn straight onto it is unreadable in exactly the frames where the
+    # legend matters most.
+    top = BEV - 20 - 15 * len(rows)
+    d.rectangle([0, top - 6, BEV, BEV], fill=(12, 20, 20))
+    for r, cs in enumerate(rows):
+        x = 10
+        y = top + 15 * r
+        for c in cs:
+            d.rectangle([x, y + 2, x + 9, y + 11], fill=OCC_PALETTE[c],
+                        outline=(60, 76, 76))
+            d.text((x + 13, y), OCC_NAMES[c], font=f, fill=(168, 182, 182))
+            x += 16 + int(d.textlength(OCC_NAMES[c], font=f)) + 8
+
+
+def _poly(draw, pts_m, colour, width=2, closed=True, casing=True):
+    """Polyline in ego metres, with a dark casing so it reads on any background.
+
+    The semantic panel contains saturated green, magenta and white, so a plain
+    green "feasible" line is invisible over vegetation and a white one over
+    free space. A 2 px darker underlay costs nothing and makes every overlay
+    legible regardless of what class is beneath it.
+    """
     seq = [tuple(p) for p in _to_px(pts_m)]
     if closed:
         seq.append(seq[0])
+    if casing:
+        draw.line(seq, fill=(10, 16, 16), width=width + 3)
     draw.line(seq, fill=colour, width=width)
 
 
 def _render_bev(scene, result) -> Image.Image:
     img = Image.new('RGB', (BEV, BEV), PANEL_BG)
+    layer = _semantic_layer(scene.freespace)
+    if layer is not None:
+        # dimmed, so the overlaid trajectories and boxes stay readable against
+        # a palette that includes pure white (free) and pure yellow (bicycle)
+        img = Image.blend(img, layer, 0.72)
     d = ImageDraw.Draw(img)
     f = _font(11)
 
-    _draw_freespace(d, scene.freespace)
+    if layer is None:
+        _draw_freespace(d, scene.freespace)
 
     origin = _to_px([[0, 0]])[0]
     for r in (10, 20, 30):
@@ -157,12 +261,13 @@ def _render_bev(scene, result) -> Image.Image:
                                      scene.ego.length, scene.ego.width)
     d.polygon([tuple(p) for p in _to_px(ego_poly)], fill=EGO, outline=EGO_EDGE)
 
-    d.text((10, 8), 'OCCUPANCY  +  CANDIDATES', font=_font(12, bold=True),
+    d.text((10, 8), 'FLASHOCC SEMANTICS  +  CANDIDATES', font=_font(12, bold=True),
            fill=TEXT)
-    d.text((10, BEV - 42), 'teal drivable   grey unknown   red obstacle',
-           font=f, fill=(86, 112, 112))
-    d.text((10, BEV - 27), 'green feasible   dark-red rejected   amber chosen',
-           font=f, fill=(86, 112, 112))
+    # legend first: it lays down a dark backing strip that would otherwise
+    # cover the candidate-colour line drawn under it
+    _draw_occ_legend(d, scene.freespace, f)
+    d.text((10, BEV - 16), 'green feasible   dark-red rejected   amber chosen',
+           font=f, fill=(110, 134, 134))
     return img
 
 
@@ -368,6 +473,15 @@ def main() -> None:
     ap.add_argument('--colors', type=int, default=128)
     ap.add_argument('--no-camera', action='store_true',
                     help='skip the camera panel (occupancy + tiles only)')
+    ap.add_argument('--occupancy', choices=('flashocc', 'corridor'),
+                    default='flashocc',
+                    help='flashocc shows all 18 Occ3D classes; corridor is the '
+                         'synthetic band, which has no semantics to show')
+    ap.add_argument('--occlusion', choices=('temporal', 'raycast', 'none'),
+                    default='temporal')
+    ap.add_argument('--command', type=int, default=None,
+                    help='fixed drive command; default derives it per step from '
+                         'the route, which is what the pipeline now does')
     ap.add_argument('--out', default='e2e_pipeline/assets/closed_loop.gif')
     args = ap.parse_args()
 
@@ -376,7 +490,16 @@ def main() -> None:
     from .closed_loop import constant_velocity_planner, diffusiondrive_anchor_planner
 
     nusc = NuScenes(version='v1.0-mini', dataroot=args.dataroot, verbose=False)
-    world = GTWorldModel(nusc, scene_idx=args.scene)
+    if args.occupancy == 'flashocc':
+        # Real FlashOcc output, so the panel can show all 18 Occ3D classes. The
+        # synthetic corridor has no semantics to show -- it is a band drawn
+        # around the logged route, which is why the old panel could only ever
+        # display the three-way reduction.
+        from .closed_loop import FlashOccWorldModel
+        world = FlashOccWorldModel(nusc, scene_idx=args.scene,
+                                   occlusion=args.occlusion)
+    else:
+        world = GTWorldModel(nusc, scene_idx=args.scene)
     v0 = world.initial_speed() if args.initial_speed is None else args.initial_speed
     cfg = LoopConfig(max_steps=args.steps, initial_speed=v0)
 
@@ -397,7 +520,11 @@ def main() -> None:
 
     SafetyFilter.__call__ = capturing
     try:
-        records, metrics = ClosedLoopRunner(world, planner, cfg).run(command=2)
+        # `command=None` derives the drive command per step from the route.
+        # Pinning it to 2 ('straight'), which this used to do implicitly, plans
+        # straight through every turn -- on scene-0796 that is most of the run.
+        records, metrics = ClosedLoopRunner(world, planner, cfg).run(
+            command=args.command)
     finally:
         SafetyFilter.__call__ = orig_call
 

@@ -124,6 +124,14 @@ class FreeSpace:
     esdf: np.ndarray                   # (nx, ny) float32, metres to nearest obstacle
     origin: tuple[float, float]
     res: float
+    #: (nx, ny) int8 Occ3D class per BEV cell, or None when the source had no
+    #: semantics (the synthetic corridor). The planner does not read this -- the
+    #: three boolean rasters above are the whole planning interface, and adding
+    #: a class id to them would let a consumer start special-casing 'pedestrian'
+    #: in a filter that is supposed to be class-agnostic. It is carried for
+    #: visualisation and diagnosis, where collapsing 18 classes to
+    #: drivable/obstacle/unknown hides what the occupancy branch actually said.
+    semantics: np.ndarray | None = None
 
     @property
     def free_fraction(self) -> float:
@@ -283,7 +291,24 @@ class FreeSpaceExtractor:
             esdf=esdf,
             origin=(self.grid.x[0], self.grid.y[0]),
             res=float(self.grid.x[2]),
+            semantics=self.bev_semantics(sem),
         )
+
+    @staticmethod
+    def bev_semantics(sem: np.ndarray) -> np.ndarray:
+        """(nx, ny, nz) class volume -> (nx, ny) class per cell, topmost non-free.
+
+        Matches the official FlashOCC `vis_occ.py` reduction rather than
+        inventing one: each column takes the class of its highest occupied
+        voxel, which is the surface you would see looking straight down. On open
+        road that is `driveable_surface`; where a car stands it is `car`.
+        """
+        occupied = sem != FREE_CLASS
+        # highest occupied index per column, 0 where the column is empty
+        top = (sem.shape[2] - 1
+               - np.argmax(occupied[:, :, ::-1], axis=2))
+        out = np.take_along_axis(sem, top[:, :, None], axis=2)[:, :, 0]
+        return np.where(occupied.any(axis=2), out, FREE_CLASS).astype(np.int8)
 
     # -- distance field -----------------------------------------------------
 
