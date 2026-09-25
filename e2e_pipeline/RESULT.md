@@ -41,7 +41,7 @@ does not need a name to mark a voxel occupied.
 
 ### 2. Safety / feasibility filter
 
-`safety_filter.py` gates DiffusionDrive's candidates on four independent axes:
+`planner/safety_filter.py` gates DiffusionDrive's candidates on four independent axes:
 
 | Gate | Source | Catches |
 |---|---|---|
@@ -294,7 +294,7 @@ that matches the intent.
 
 ## Action-conditioned world model: implemented, measured, does not help
 
-`world_model.py` adds the plan-before-acting loop: `z_0 = encode(scene)`,
+`planner/world_model.py` adds the plan-before-acting loop: `z_0 = encode(scene)`,
 `z_{t+1} = f(z_t, a_t)` per candidate action, rank by a critic over the rollout,
 execute the best. It is wired into the closed loop behind
 `LoopConfig.use_world_model` and **defaults to off**, because it measurably

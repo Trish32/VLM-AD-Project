@@ -50,7 +50,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(TOOLS_DIR))
 
 from e2e_pipeline.scene import EgoState, SceneRepresentation
-from e2e_pipeline.vlm_planner import DrivingIntent, intent_conditioned_planner
+from e2e_pipeline.planner.vlm_planner import DrivingIntent, intent_conditioned_planner
 
 from dataroot import default_dataroot
 from score_decisions import ego_speed_profile

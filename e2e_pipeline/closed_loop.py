@@ -39,18 +39,19 @@ from typing import Callable, Protocol
 import numpy as np
 
 from .freespace import FreeSpace, FreeSpaceExtractor, GridConfig
-from .metrics import StepRecord, evaluate, format_report
-from .safety_filter import SafetyFilter
-from .calibration import (PlattCalibrator, expected_calibration_error,
-                          scale_for_risk_budget, scale_trajectory)
-from .structured import build_structured, structured_gate
+from .metrics.metrics import StepRecord, evaluate, format_report
+from .planner.safety_filter import SafetyFilter
+from .calibration.calibration import (
+    PlattCalibrator, expected_calibration_error, scale_for_risk_budget,
+    scale_trajectory)
+from .planner.structured import build_structured, structured_gate
 
 # Beyond this drift the logged future is not a counterfactual (see run()).
 COUNTERFACTUAL_MAX_DIVERGENCE_M = 3.0
-from .verifier import (DEGRADE_NONE, TrajectoryVerifier, compare_to_shadow,
-                       decelerate_along)
-from .world_model import (AnalyticCritic, KinematicWorldModel,
-                          plan_with_world_model)
+from .planner.verifier import (
+    DEGRADE_NONE, TrajectoryVerifier, compare_to_shadow, decelerate_along)
+from .planner.world_model import (AnalyticCritic, KinematicWorldModel,
+                                  plan_with_world_model)
 from .scene import Agent, EgoState, SceneRepresentation
 from .temporal_occlusion import TemporalOcclusionMemory
 from .uncertainty import RiskModel, TrackCovarianceTracker
@@ -610,7 +611,7 @@ class GTWorldModel:
         was a hardcoded 'straight', which is also an oracle and additionally a
         wrong one whenever the ego turned.
         """
-        from .vlm_planner import command_from_future
+        from .planner.vlm_planner import command_from_future
         smp = self.samples
         if not smp:
             return 2
@@ -843,7 +844,7 @@ def diffusiondrive_anchor_planner(anchor_npy: str, dt: float = 0.5,
     19.9 m for the full vocabulary. Hardcoding it did not merely ignore an
     argument; it discarded 97% of the candidate geometry the file contains.
     """
-    from .vlm_planner import INDEX_COMMAND, DrivingIntent, intent_conditioned_planner
+    from .planner.vlm_planner import INDEX_COMMAND, DrivingIntent, intent_conditioned_planner
 
     inner = intent_conditioned_planner(anchor_npy, dt=dt, max_accel=max_accel)
 
@@ -885,7 +886,7 @@ class ReactiveGTWorldModel(GTWorldModel):
 
     def __init__(self, *args, reaction=None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        from .world_model import ReactiveWorldModel
+        from .planner.world_model import ReactiveWorldModel
         self._react = reaction or ReactiveWorldModel()
         self._state: list | None = None       # agents in WORLD frame
         self._t = -1.0
@@ -914,7 +915,7 @@ class ReactiveGTWorldModel(GTWorldModel):
     def _advance(self, agents, dt, ego_xy, ego_yaw):
         """One IDM step in world frame, with the ego as an obstacle."""
         from dataclasses import replace as _replace
-        from .world_model import (IDM_A_MAX, IDM_B, IDM_S0, IDM_T,
+        from .planner.world_model import (IDM_A_MAX, IDM_B, IDM_S0, IDM_T,
                                   LANE_HALF_WIDTH)
         out = []
         for a in agents:

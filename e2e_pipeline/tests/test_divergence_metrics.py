@@ -7,12 +7,9 @@ configuration. Neither raised anything.
 import numpy as np
 import pytest
 
-from e2e_pipeline.divergence_metrics import (DIVERGENCE_BUCKETS, StepObs,
-                                             aggregate_scenes,
-                                             bucketed_collision_rate,
-                                             counterfactual_safety,
-                                             progress_per_divergence,
-                                             recovery_rate)
+from e2e_pipeline.metrics.divergence_metrics import (
+    DIVERGENCE_BUCKETS, StepObs, aggregate_scenes, bucketed_collision_rate,
+    counterfactual_safety, progress_per_divergence, recovery_rate)
 
 
 def _obs(div=0.0, collided=False, prog=1.0, v=5.0, lv=5.0, rp=0.0, rl=0.0):
@@ -25,7 +22,7 @@ def _obs(div=0.0, collided=False, prog=1.0, v=5.0, lv=5.0, rp=0.0, rl=0.0):
 
 def test_step_record_has_planned_traj_field():
     """Without it the counterfactual compared the logged path against itself."""
-    from e2e_pipeline.metrics import StepRecord
+    from e2e_pipeline.metrics.metrics import StepRecord
     assert 'planned_traj' in StepRecord.__dataclass_fields__
 
 
@@ -123,7 +120,7 @@ def test_counterfactual_is_gated_on_low_divergence():
 
 def test_counterfactual_ignores_invalid_steps():
     """Placeholder zeros must not dilute the signal toward 'identical'."""
-    from e2e_pipeline.metrics import StepRecord, divergence_metrics
+    from e2e_pipeline.metrics.metrics import StepRecord, divergence_metrics
     recs = []
     for i in range(6):
         r = StepRecord(t=i * 0.5, ego_xy=np.array([float(i), 0.0]), ego_yaw=0.0,

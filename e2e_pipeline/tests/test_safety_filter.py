@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from e2e_pipeline.freespace import FREE_CLASS, FreeSpaceExtractor, GridConfig
-from e2e_pipeline.safety_filter import FeasibilityLimits, SafetyFilter
+from e2e_pipeline.planner.safety_filter import FeasibilityLimits, SafetyFilter
 from e2e_pipeline.scene import Agent, EgoState, SceneRepresentation
 from e2e_pipeline.uncertainty import RiskModel, TrackCovarianceTracker
 

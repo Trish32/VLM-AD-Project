@@ -8,9 +8,9 @@ import pytest
 
 from e2e_pipeline.freespace import FreeSpace
 from e2e_pipeline.scene import Agent, EgoState, SceneRepresentation
-from e2e_pipeline.world_model import (Action, AnalyticCritic, KinematicWorldModel,
-                                      actions_from_trajectory,
-                                      plan_with_world_model, rollout)
+from e2e_pipeline.planner.world_model import (
+    Action, AnalyticCritic, KinematicWorldModel, actions_from_trajectory,
+    plan_with_world_model, rollout)
 
 
 def _freespace(drivable=True, clear=5.0, nx=140, ny=80, res=0.5):

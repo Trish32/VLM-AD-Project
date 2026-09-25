@@ -8,8 +8,8 @@ import pytest
 
 from e2e_pipeline.freespace import FreeSpace
 from e2e_pipeline.scene import Agent, EgoState, SceneRepresentation
-from e2e_pipeline.verifier import (MAX_CURVATURE, SPEED_LIMIT_MPS,
-                                   TrajectoryVerifier, comfortable_stop)
+from e2e_pipeline.planner.verifier import (
+    MAX_CURVATURE, SPEED_LIMIT_MPS, TrajectoryVerifier, comfortable_stop)
 
 
 def _scene(agents=(), speed=10.0):
@@ -184,7 +184,7 @@ def _lead(x, tid=9):
 
 def test_conservative_plan_is_never_flagged():
     """Asymmetry: going slower than the shadow is always acceptable."""
-    from e2e_pipeline.verifier import DEGRADE_NONE, compare_to_shadow
+    from e2e_pipeline.planner.verifier import DEGRADE_NONE, compare_to_shadow
     slow = np.stack([[1.0 * (t + 1), 0.0] for t in range(6)])
     rep = compare_to_shadow(slow, _scene())
     assert rep.excess_m < 0
@@ -193,7 +193,7 @@ def test_conservative_plan_is_never_flagged():
 
 def test_lane_change_does_not_trigger_degradation():
     """The false-positive this design exists to avoid."""
-    from e2e_pipeline.verifier import DEGRADE_NONE, compare_to_shadow
+    from e2e_pipeline.planner.verifier import DEGRADE_NONE, compare_to_shadow
     lane = np.stack([[5.0 * (t + 1), 3.0 * min(1, (t + 1) / 3)] for t in range(6)])
     rep = compare_to_shadow(lane, _scene())
     assert rep.lateral_m == pytest.approx(3.0)      # deviation IS observed
@@ -201,27 +201,27 @@ def test_lane_change_does_not_trigger_degradation():
 
 
 def test_closing_on_a_lead_car_triggers_deceleration():
-    from e2e_pipeline.verifier import DEGRADE_DECEL, compare_to_shadow
+    from e2e_pipeline.planner.verifier import DEGRADE_DECEL, compare_to_shadow
     rep = compare_to_shadow(_cruise(), _scene([_lead(20.0)]))
     assert rep.excess_m > 0
     assert rep.action == DEGRADE_DECEL
 
 
 def test_severe_overshoot_triggers_pull_over():
-    from e2e_pipeline.verifier import DEGRADE_PULLOVER, compare_to_shadow
+    from e2e_pipeline.planner.verifier import DEGRADE_PULLOVER, compare_to_shadow
     rep = compare_to_shadow(_cruise(), _scene([_lead(10.0)]))
     assert rep.action == DEGRADE_PULLOVER
 
 
 def test_degradation_is_ordered_by_severity():
-    from e2e_pipeline.verifier import compare_to_shadow
+    from e2e_pipeline.planner.verifier import compare_to_shadow
     far = compare_to_shadow(_cruise(), _scene([_lead(25.0)])).excess_m
     near = compare_to_shadow(_cruise(), _scene([_lead(10.0)])).excess_m
     assert near > far
 
 
 def test_decelerate_substitutes_the_shadow_itself():
-    from e2e_pipeline.verifier import DEGRADE_DECEL, compare_to_shadow
+    from e2e_pipeline.planner.verifier import DEGRADE_DECEL, compare_to_shadow
     rep = compare_to_shadow(_cruise(), _scene([_lead(20.0)]))
     assert rep.action == DEGRADE_DECEL
     assert np.allclose(rep.trajectory, rep.shadow)
@@ -234,7 +234,7 @@ def test_shadow_converges_toward_the_speed_limit():
     -- that needs 4.4 s. Asserting it arrives would be asserting something
     physically impossible, so the contract is monotone approach.
     """
-    from e2e_pipeline.verifier import SPEED_LIMIT_MPS, shadow_plan
+    from e2e_pipeline.planner.verifier import SPEED_LIMIT_MPS, shadow_plan
     sh = shadow_plan(_scene(speed=30.0), horizon=6, dt=0.5)
     speeds = np.linalg.norm(np.diff(np.vstack([[0.0, 0.0], sh]), axis=0), axis=1) / 0.5
     assert all(b < a for a, b in zip(speeds, speeds[1:]))    # decelerating
@@ -248,7 +248,7 @@ def test_shadow_converges_toward_the_speed_limit():
 
 
 def test_shadow_slows_for_a_lead_vehicle():
-    from e2e_pipeline.verifier import shadow_plan
+    from e2e_pipeline.planner.verifier import shadow_plan
     open_road = shadow_plan(_scene(), horizon=6, dt=0.5)
     blocked = shadow_plan(_scene([_lead(12.0)]), horizon=6, dt=0.5)
     assert blocked[-1, 0] < open_road[-1, 0]
@@ -261,7 +261,7 @@ def test_shadow_fires_when_the_plan_genuinely_overshoots():
     distinguish "correctly silent" from "wired wrong". This constructs the case
     it exists for: a plan travelling further than the speed limit allows.
     """
-    from e2e_pipeline.verifier import (DEGRADE_DECEL, DEGRADE_PULLOVER,
+    from e2e_pipeline.planner.verifier import (DEGRADE_DECEL, DEGRADE_PULLOVER,
                                        SPEED_LIMIT_MPS, compare_to_shadow)
     over = np.stack([[(SPEED_LIMIT_MPS + 8.0) * 0.5 * (t + 1), 0.0]
                      for t in range(6)])
@@ -297,5 +297,5 @@ def test_fault_attribution_known_cases(name, v, pos, expect):
     contacts occur with the ego stationary, so 0 ego-fault is the rule behaving
     correctly, not failing to fire.
     """
-    from e2e_pipeline.metrics import _ego_at_fault
+    from e2e_pipeline.metrics.metrics import _ego_at_fault
     assert _ego_at_fault(_Rec(v), (np.array(pos),)) is expect

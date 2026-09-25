@@ -4,9 +4,9 @@ import pytest
 
 from e2e_pipeline.freespace import FreeSpace
 from e2e_pipeline.scene import Agent, EgoState, SceneRepresentation
-from e2e_pipeline.structured import (TTC_CRITICAL_S, build_structured,
-                                     classify_intent, structured_gate,
-                                     time_to_collision, turn_observable)
+from e2e_pipeline.planner.structured import (
+    TTC_CRITICAL_S, build_structured, classify_intent, structured_gate,
+    time_to_collision, turn_observable)
 
 
 def _scene(agents=(), speed=12.0):
@@ -105,7 +105,7 @@ class _FakeMap:
 
 
 def test_lane_facts_partition_agents():
-    from e2e_pipeline.structured import LaneContext, build_lane_facts
+    from e2e_pipeline.planner.structured import LaneContext, build_lane_facts
     scene = _scene([_ag(15.0, 0.0, tid=1),      # same lane
                     _ag(18.0, 4.0, tid=2),      # feeder lane
                     _ag(12.0, 20.0, tid=3)])    # off-lane
@@ -117,7 +117,7 @@ def test_lane_facts_partition_agents():
 
 def test_lane_layer_absent_without_a_map():
     """Degrades to None rather than reaching for a map itself."""
-    from e2e_pipeline.structured import build_lane_facts
+    from e2e_pipeline.planner.structured import build_lane_facts
     assert build_lane_facts(None, _scene()) is None
 
 
@@ -128,7 +128,7 @@ def test_merging_conflict_gate_can_fire():
     the same ambiguity shadow mode had. This constructs the case it exists for:
     a vehicle in an incoming lane, closing, not yet in our path.
     """
-    from e2e_pipeline.structured import (LaneContext, build_lane_facts,
+    from e2e_pipeline.planner.structured import (LaneContext, build_lane_facts,
                                          lane_conflict_gate)
     # Must CONVERGE: under CPA an agent holding 4 m of lateral offset is
     # correctly not a conflict, however fast it closes along the sight line.
@@ -141,7 +141,7 @@ def test_merging_conflict_gate_can_fire():
 
 
 def test_merging_gate_silent_when_not_closing():
-    from e2e_pipeline.structured import (LaneContext, build_lane_facts,
+    from e2e_pipeline.planner.structured import (LaneContext, build_lane_facts,
                                          lane_conflict_gate)
     scene = _scene([_ag(40.0, 4.0, vx=12.0, tid=2)], speed=10.0)
     ctx = LaneContext(_FakeMap(), np.zeros(2), 0.0)

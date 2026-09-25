@@ -48,7 +48,7 @@ class OccludedWorld(StubWorld):
 
 def _run(world=None, **cfg_kw):
     from e2e_pipeline.closed_loop import ClosedLoopRunner, LoopConfig
-    from e2e_pipeline.safety_filter import FeasibilityLimits, SafetyFilter
+    from e2e_pipeline.planner.safety_filter import FeasibilityLimits, SafetyFilter
     cfg = LoopConfig(max_steps=8, initial_speed=8.0, **cfg_kw)
     r = ClosedLoopRunner(world or StubWorld(), _straight_planner(), cfg,
                          safety=SafetyFilter(
@@ -100,7 +100,7 @@ def test_shadow_mode_records_an_excess_when_enabled():
 
 def test_three_valued_gate_reaches_the_verdict():
     """The graded gate must actually produce PENALIZE/REJECT, not just exist."""
-    from e2e_pipeline.safety_filter import FeasibilityLimits, SafetyFilter
+    from e2e_pipeline.planner.safety_filter import FeasibilityLimits, SafetyFilter
     from e2e_pipeline.scene import EgoState, SceneRepresentation
     w = OccludedWorld(unknown_from=40)
     scene = SceneRepresentation(agents=[], ego=EgoState(speed=8.0),
@@ -116,7 +116,7 @@ def test_three_valued_gate_reaches_the_verdict():
 
 def test_multiplicative_ranking_changes_the_cost():
     """A ranking form that scores identically to the additive one is a no-op."""
-    from e2e_pipeline.safety_filter import FeasibilityLimits, SafetyFilter
+    from e2e_pipeline.planner.safety_filter import FeasibilityLimits, SafetyFilter
     from e2e_pipeline.scene import EgoState, SceneRepresentation
     from e2e_pipeline.uncertainty import RiskModel
     w = OccludedWorld(unknown_from=180)

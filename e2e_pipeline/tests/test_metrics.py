@@ -8,10 +8,10 @@ definition against a hand-computable case.
 import numpy as np
 import pytest
 
-from e2e_pipeline.metrics import (COMFORT_LAT_ACCEL, StepRecord, comfort_metrics,
-                                  evaluate, latency_metrics, obb_overlap,
-                                  polygon_distance, prediction_metrics,
-                                  route_completion, safety_metrics)
+from e2e_pipeline.metrics.metrics import (
+    COMFORT_LAT_ACCEL, StepRecord, comfort_metrics, evaluate, latency_metrics,
+    obb_overlap, polygon_distance, prediction_metrics, route_completion,
+    safety_metrics)
 from e2e_pipeline.scene import ego_footprint_corners as box
 
 

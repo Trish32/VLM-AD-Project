@@ -82,7 +82,7 @@ _DD_LABEL     = (150, 160, 160)
 
 # The VLM emits a coarse decision, not a speed. Mapping it here keeps the GIF to
 # two VLM calls per frame; the panel says "intent from decision" so it is not
-# mistaken for a directly-queried DrivingIntent (e2e_pipeline.vlm_planner does
+# mistaken for a directly-queried DrivingIntent (e2e_pipeline.planner.vlm_planner does
 # that properly).
 _DECISION_SPEED = {'PROCEED': 1.0, 'SLOW_DOWN': 0.5, 'YIELD': 0.3, 'STOP': 0.0,
                    'UNKNOWN': 0.5}
@@ -120,7 +120,7 @@ def _dd_panel(size, dd_planner, safety_filter, out, lidar2ego_yaw, score_thr,
     import numpy as _np
     from e2e_pipeline.freespace import FREE_CLASS, FreeSpaceExtractor, GridConfig
     from e2e_pipeline.scene import EgoState, SceneRepresentation
-    from e2e_pipeline.vlm_planner import DrivingIntent
+    from e2e_pipeline.planner.vlm_planner import DrivingIntent
 
     img = _np.full((size, size, 3), _DD_BG, _np.uint8)
     s_px = size / (2 * rng_m)
@@ -300,8 +300,8 @@ def _load_planner():
     """(planner, safety_filter), or (None, None) if the panel cannot be built."""
     sys.path.insert(0, str(ROOT.parent))
     try:
-        from e2e_pipeline.safety_filter import SafetyFilter
-        from e2e_pipeline.vlm_planner import intent_conditioned_planner
+        from e2e_pipeline.planner.safety_filter import SafetyFilter
+        from e2e_pipeline.planner.vlm_planner import intent_conditioned_planner
     except ImportError as exc:
         print(f'[WARN] e2e_pipeline unavailable ({exc}) — planning panel skipped.')
         return None, None

@@ -129,7 +129,7 @@ def test_risk_budget_path_runs():
 
 def test_calibration_changes_the_risk_scale():
     """Calibrated risk must differ from raw -- proof the flag is not inert."""
-    from e2e_pipeline.calibration import PlattCalibrator
+    from e2e_pipeline.calibration.calibration import PlattCalibrator
     from e2e_pipeline.scene import EgoState
     from e2e_pipeline.uncertainty import RiskModel
     ego = EgoState(speed=10.0)
@@ -232,9 +232,9 @@ def test_association_gate_rejects_an_implausible_jump():
 
 def test_critic_risk_can_see_the_tracker_and_calibrator():
     """Both were hardcoded to None, so the critic scored in model units."""
-    from e2e_pipeline.calibration import PlattCalibrator
+    from e2e_pipeline.calibration.calibration import PlattCalibrator
     from e2e_pipeline.uncertainty import TrackCovarianceTracker
-    from e2e_pipeline.world_model import AnalyticCritic
+    from e2e_pipeline.planner.world_model import AnalyticCritic
     plain = AnalyticCritic()
     assert plain.tracker is None and plain.calibrator is None, \
         'defaults must not move -- existing results depend on them'
@@ -249,7 +249,7 @@ def test_critic_risk_can_see_the_tracker_and_calibrator():
 
 def test_command_from_future_matches_upstream_rule():
     """+-2 m lateral at the FINAL waypoint, indices [right, left, straight]."""
-    from e2e_pipeline.vlm_planner import COMMAND_INDEX, command_from_future
+    from e2e_pipeline.planner.vlm_planner import COMMAND_INDEX, command_from_future
     straight = [[5.0 * (t + 1), 0.0] for t in range(6)]
     left = [[5.0 * (t + 1), 0.6 * (t + 1)] for t in range(6)]      # ends +3.6
     right = [[5.0 * (t + 1), -0.6 * (t + 1)] for t in range(6)]    # ends -3.6

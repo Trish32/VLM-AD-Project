@@ -73,7 +73,7 @@ def test_unknown_is_reachable_unlike_the_geometric_shadow():
 
 
 def _filter(**kw):
-    from e2e_pipeline.safety_filter import FeasibilityLimits, SafetyFilter
+    from e2e_pipeline.planner.safety_filter import FeasibilityLimits, SafetyFilter
     return SafetyFilter(limits=FeasibilityLimits(three_valued_unknown=True, **kw))
 
 
@@ -132,7 +132,7 @@ def test_three_valued_gate_does_not_fail_clearance_on_unknown_cells():
                             esdf=esdf, origin=(-10.0, -30.0), res=0.5))
     traj = np.stack([[8.0 * (t + 1), 0.0] for t in range(6)])
     two = _filter().limits.__class__(three_valued_unknown=False)
-    from e2e_pipeline.safety_filter import SafetyFilter
+    from e2e_pipeline.planner.safety_filter import SafetyFilter
     v2 = SafetyFilter(limits=two)._evaluate(0, traj, scene, None, 0.5)
     v3 = _filter()._evaluate(0, traj, scene, None, 0.5)
     assert v2.min_clearance == pytest.approx(0.0), 'fixture: two-valued sees 0 m'
@@ -176,7 +176,7 @@ def test_no_prior_means_freespace_stays_optional():
 
 
 def test_limits_reject_contradictory_unknown_configuration():
-    from e2e_pipeline.safety_filter import FeasibilityLimits
+    from e2e_pipeline.planner.safety_filter import FeasibilityLimits
     with pytest.raises(ValueError, match='Pick one'):
         FeasibilityLimits(three_valued_unknown=True, allow_unknown=True)
     with pytest.raises(ValueError, match='extra steps'):

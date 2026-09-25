@@ -48,7 +48,7 @@ import numpy as np
 
 from .freespace import FreeSpace, FreeSpaceExtractor, GridConfig
 from .scene import Agent, EgoState, SceneRepresentation, TrajectoryDistribution
-from .safety_filter import FilterResult, SafetyFilter
+from .planner.safety_filter import FilterResult, SafetyFilter
 from .uncertainty import RiskModel, TrackCovarianceTracker
 
 

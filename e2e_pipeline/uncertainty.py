@@ -82,12 +82,28 @@ class _TrackState:
 
 
 class TrackCovarianceTracker:
-    """Constant-velocity Kalman filter keyed by Sparse4D's track ids.
+    """Constant-velocity Kalman filter keyed by whatever track ids it is given.
 
-    Sparse4D v3 does association internally (its headline is end-to-end tracking with
-    no separate tracker), so this deliberately does *not* re-do data association — it
-    only supplies the second-order statistics that the detector does not produce.
-    Feeding it the same track id twice in one frame is a caller error.
+    DESIGNED AGAINST SPARSE4D, RUN AGAINST BEVFORMER, AND THAT GAP CAUSED A BUG.
+    Sparse4D v3 does association internally (its headline is end-to-end tracking
+    with no separate tracker), so this deliberately does *not* re-do data
+    association — it only supplies the second-order statistics the detector does
+    not produce. That is a precondition, not a remark.
+
+    The live arm does not satisfy it. The only saved per-sample detections
+    covering all ten mini scenes come from the BEVFormer port, and a nuScenes
+    *detection* submission carries no `tracking_id` at all. The adapter therefore
+    synthesises one, and its first attempt hashed the frame token, so no id
+    survived a step: measured 0.0% carried to the next frame against 97.1% under
+    GT. This filter never ran a second update on any agent and every covariance
+    stayed pinned at its seed R(score).
+
+    `LiveDetectionAdapter(associate=True)` now does nearest-neighbour association
+    before the ids reach here (65% carried). That is a weak tracker standing in
+    for a strong one; the right fix is Sparse4D's own ids — its port measures
+    AMOTA 0.627 — which needs that port's per-sample output re-exported.
+
+    Feeding the same track id twice in one frame is a caller error.
 
     Parameters
     ----------

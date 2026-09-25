@@ -32,18 +32,32 @@ is exact, the viewpoint is logged, and the gap is printed in the header
 
 ## Layout
 
-`scene.py` unified ego-frame representation (frame contract lives here) ·
-`freespace.py` Occ3D volume → traversable/obstacle/unknown + ESDF + BEV semantics ·
-`temporal_occlusion.py` unknown as "not observed in N frames", world-frame ·
-`uncertainty.py` CV Kalman + calibrated score→covariance → collision probability ·
-`safety_filter.py` four gates + three-valued unknown handling ·
-`verifier.py` independent re-check between planning and control (8 rules) ·
-`world_model.py` latent rollout + critic · `vlm_planner.py` Qwen2.5-VL → intent →
-anchors · `calibration.py` Platt/ECE · `live_adapter.py` real detections +
-association · `pipeline.py` per-frame orchestration behind Protocols ·
-`closed_loop.py` runner + GT/live/FlashOcc worlds · `metrics.py` five families ·
-`divergence_metrics.py` divergence-aware safety · `visualize.py` → GIF ·
-`tests/` **212 tests**
+**root — the scene and what fills it.** `scene.py` unified ego-frame
+representation (the frame contract lives here) · `freespace.py` Occ3D volume →
+traversable/obstacle/unknown + ESDF + BEV semantics · `temporal_occlusion.py`
+unknown as "not observed in N frames", world-frame · `uncertainty.py` CV Kalman
++ calibrated score→covariance → collision probability · `live_adapter.py` real
+detections and occupancy · `pipeline.py` per-frame orchestration behind
+Protocols · `closed_loop.py` runner + GT/live/FlashOcc worlds
+
+**`planner/`** — consumes a scene, produces or judges a trajectory.
+`safety_filter` four gates + three-valued unknown · `verifier` independent
+re-check before control (8 rules) · `world_model` latent rollout + critic ·
+`residual` learned dynamics correction · `vlm_planner` Qwen2.5-VL → intent →
+anchors · `diffusion_sampler` multi-command candidates · `structured` scene facts
+
+**`calibration/`** — `calibration` Platt/ECE · `calibrate` risk price by dual ascent
+
+**`metrics/`** — `metrics` five families · `divergence_metrics` divergence-aware safety
+
+**`tools/`** — 25 `python -m` entry points, one per EXPERIMENT.md table, plus
+`visualize`. Nothing in the package imports from here.
+
+**`tests/`** — **212 tests**
+
+Nothing in `planner/` reads a detector or an occupancy tensor directly; that is
+the point of the scene representation, and the package boundary makes a
+violation of it visible as an import.
 
 ## Architecture
 
@@ -109,10 +123,21 @@ Canonical: 10 nuScenes-mini scenes × 20 steps, derived commands, `w_risk = 1.0`
 | LIVE, pinned | **0** | **0** | 70 | 1.73 m | 52.5% | 1.27 | 0.0 m | 28 / 69 ms |
 | LIVE, free | **0** | 20 | 94 | 1.83 m | 39.8% | 1.32 | 5.2 m | 27 / 69 ms |
 
-"LIVE" replaces the GT oracle with real BEVFormer detections. "Pinned" holds the
-ego on the logged trajectory, which removes the deviation confound described
-below and is the number to read for **safety**; "free" is the number to read for
-whether the policy **drives**.
+"Pinned" holds the ego on the logged trajectory, which removes the deviation
+confound described below and is the number to read for **safety**; "free" is the
+number to read for whether the policy **drives**.
+
+> **"LIVE" is BEVFormer, not Sparse4D, and the mismatch matters.** The
+> architecture above names Sparse4D v3 as the object branch because it supplies
+> *stable track ids* — `uncertainty.py` is built on that and deliberately does no
+> association of its own. But the only saved per-sample detections covering all
+> ten mini scenes come from the BEVFormer port, and a nuScenes **detection**
+> submission carries no `tracking_id`. So the tracker's precondition was
+> silently false: the adapter synthesised ids by hashing position, **0.0%**
+> survived a frame, and the Kalman filter never ran a second update.
+> Nearest-neighbour association now recovers 65%. The real fix is to re-export
+> the Sparse4D port's per-sample output (it measures AMOTA 0.627) — currently
+> only its aggregate summary was kept.
 
 ### What the closed loop surfaced
 
@@ -160,10 +185,6 @@ pipe = E2EPipeline(
 out = pipe.step(images, meta, EgoState(speed=8.0), command=1)
 trajectory = out.trajectory            # (T, 2) -> controller
 ```
-
-The four networks are separately-trained ports sharing no backbone, ~2–3 s/frame
-serially on an M3 Max, so supply live adapters or cached per-frame tensors — the
-integration logic under test is identical either way.
 
 ```bash
 conda run -n simple_bev_vldrive python -m pytest e2e_pipeline/tests/ -q   # 212 tests, ~2 s

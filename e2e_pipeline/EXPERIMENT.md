@@ -825,7 +825,7 @@ requirement; the first is what the pinned mode does artificially.
 
 ## 22. Re-validating the three retired components against live perception
 
-`calibrate.py` (inert), the TTC gate (retired), and `residual.py` (abandoned)
+`calibration/calibrate.py` (inert), the TTC gate (retired), and `planner/residual.py` (abandoned)
 were all judged under the GT oracle. §19 showed the oracle was hiding real
 costs, so each verdict deserved re-testing against live detections.
 
@@ -1651,15 +1651,15 @@ one — only reading the table against the sentence describing it.
 ## Reproduce
 
 ```bash
-PYTHONPATH=. python e2e_pipeline/risk_sweep.py        # §7
-PYTHONPATH=. python e2e_pipeline/rebaseline.py        # §8
-PYTHONPATH=. python e2e_pipeline/fit_calibration.py   # §9
-PYTHONPATH=. python e2e_pipeline/soft_risk_ab.py      # §10
+PYTHONPATH=. python -m e2e_pipeline.tools.risk_sweep        # §7
+PYTHONPATH=. python -m e2e_pipeline.tools.rebaseline        # §8
+PYTHONPATH=. python -m e2e_pipeline.tools.fit_calibration   # §9
+PYTHONPATH=. python -m e2e_pipeline.tools.soft_risk_ab      # §10
 
-PYTHONPATH=. python e2e_pipeline/covariance_calibration.py      # §26 covariance + orphans
-PYTHONPATH=. python e2e_pipeline/counterfactual_attribution.py  # §26 tail attribution
-PYTHONPATH=. python e2e_pipeline/risk_gate_recheck.py           # §26 max_risk
-PYTHONPATH=. python e2e_pipeline/residual_live_snr.py           # §26 residual SNR
-PYTHONPATH=. python e2e_pipeline/calibrate_rerun.py             # §26 critic spread
-PYTHONPATH=. python e2e_pipeline/occlusion_prior_sweep.py       # §26 occlusion prior
+PYTHONPATH=. python -m e2e_pipeline.tools.covariance_calibration      # §26 covariance + orphans
+PYTHONPATH=. python -m e2e_pipeline.tools.counterfactual_attribution  # §26 tail attribution
+PYTHONPATH=. python -m e2e_pipeline.tools.risk_gate_recheck           # §26 max_risk
+PYTHONPATH=. python -m e2e_pipeline.tools.residual_live_snr           # §26 residual SNR
+PYTHONPATH=. python -m e2e_pipeline.tools.calibrate_rerun             # §26 critic spread
+PYTHONPATH=. python -m e2e_pipeline.tools.occlusion_prior_sweep       # §26 occlusion prior
 ```

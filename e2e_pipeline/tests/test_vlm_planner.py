@@ -10,8 +10,9 @@ import numpy as np
 import pytest
 
 from e2e_pipeline.scene import EgoState, SceneRepresentation
-from e2e_pipeline.vlm_planner import (COMMAND_INDEX, DrivingIntent, IntentCache,
-                                      intent_conditioned_planner, validate_intent)
+from e2e_pipeline.planner.vlm_planner import (
+    COMMAND_INDEX, DrivingIntent, IntentCache, intent_conditioned_planner,
+    validate_intent)
 
 ANCHORS = 'diffusiondrive_planner/data/kmeans/kmeans_plan_6.npy'
 
@@ -219,7 +220,7 @@ def test_candidates_are_consumable_by_the_safety_filter(planner):
     sem[:, :, grid.z_band_indices(-0.4, 0.2)[0]] = 11
     fs = FreeSpaceExtractor(grid)(sem)
 
-    from e2e_pipeline.safety_filter import SafetyFilter
+    from e2e_pipeline.planner.safety_filter import SafetyFilter
     ego = EgoState(speed=5.0)
     cands, scores = planner(_Scene(5.0), DrivingIntent(target_speed_mps=5.0))
     scene = SceneRepresentation(agents=[], freespace=fs, ego=ego)
