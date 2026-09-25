@@ -105,6 +105,10 @@ def main():
     p.add_argument('--eval-set',   default='mini_val')
     p.add_argument('--max-frames', type=int, default=None)
     p.add_argument('--out-dir',    default='sparse4d_track_outputs')
+    p.add_argument('--export', default=None, metavar='PATH',
+                   help='also write EVERY sample (both mini splits, not just '
+                        '--eval-set) to PATH, for downstream consumers that '
+                        'need the track ids rather than the AMOTA score')
     args = p.parse_args()
 
     out_dir = Path(args.out_dir); out_dir.mkdir(parents=True, exist_ok=True)
@@ -122,6 +126,23 @@ def main():
     results = run_inference(model, loader, args.max_frames)
     n_tracks = len({d['tracking_id'] for v in results.values() for d in v})
     print(f'       unique tracks: {n_tracks}')
+
+    # `run_inference` already covers every scene and the split filter below
+    # throws most of it away. The e2e_pipeline live adapter needs all ten mini
+    # scenes AND the track ids -- it had been replaying BEVFormer detections,
+    # which carry no `tracking_id`, so its tracker was re-seeding every agent
+    # every frame (0.0% id continuity against 97.1% under GT). Exporting the
+    # unfiltered result costs one more file write.
+    if args.export:
+        exp = Path(args.export)
+        exp.parent.mkdir(parents=True, exist_ok=True)
+        with open(exp, 'w') as f:
+            json.dump({'meta': {'use_camera': True, 'use_lidar': False,
+                                'use_radar': False, 'use_map': False,
+                                'use_external': False},
+                       'results': results}, f)
+        n = sum(len(v) for v in results.values())
+        print(f'       exported {len(results)} samples / {n} boxes -> {exp}')
 
     # Filter to the requested split
     split_toks = _split_tokens(loader.nusc, args.eval_set)

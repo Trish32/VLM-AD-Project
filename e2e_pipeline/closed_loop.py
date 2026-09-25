@@ -957,13 +957,38 @@ class LivePerceptionWorldModel(GTWorldModel):
     #: oracle's 0.1 m, which was wrong here and silently applied until measured.
     detector_grade = True
 
+    #: 'bevformer' -- the detection submission this arm has always replayed. 10
+    #: scored classes, no identity, so the tracker's association precondition is
+    #: unmet and `LiveDetectionAdapter` has to synthesise ids.
+    #: 'sparse4d'  -- Sparse4D v3's tracking export, which carries the real
+    #: instance-bank ids the architecture was designed around (AMOTA 0.627), at
+    #: the cost of the 3 detection-only classes it does not submit.
+    SOURCES = {
+        'bevformer': ('results_mini_train.json', 'results_mini_val.json'),
+        'sparse4d': ('sparse4d_track_mini.json',),
+    }
+
     def __init__(self, *args, detections=None, score_thr: float = 0.25,
-                 associate: bool = True, **kwargs) -> None:
+                 associate: bool = True, source: str = 'bevformer',
+                 **kwargs) -> None:
         super().__init__(*args, **kwargs)
         from .live_adapter import DATA, LiveDetectionAdapter, load_detections
-        det = detections if detections is not None else load_detections(
-            DATA / 'results_mini_train.json', DATA / 'results_mini_val.json')
-        self.adapter = LiveDetectionAdapter(self.nusc, det, score_thr=score_thr,
+        if detections is None:
+            files = self.SOURCES.get(source)
+            if files is None:
+                raise ValueError(f'unknown source {source!r}; '
+                                 f'expected one of {sorted(self.SOURCES)}')
+            detections = load_detections(*(DATA / f for f in files))
+            if not detections:
+                raise FileNotFoundError(
+                    f'no detections for source {source!r} under {DATA}. '
+                    f'For sparse4d, export them first:\n'
+                    f'  cd sparse4d_vldrive && PYTORCH_ENABLE_MPS_FALLBACK=1 '
+                    f'PYTHONPATH=. python sparse4d_vl/tools/eval_track.py '
+                    f'--export ../e2e_pipeline/data/sparse4d_track_mini.json')
+        self.source = source
+        self.adapter = LiveDetectionAdapter(self.nusc, detections,
+                                            score_thr=score_thr,
                                             associate=associate)
         self.divergence: list = []
 

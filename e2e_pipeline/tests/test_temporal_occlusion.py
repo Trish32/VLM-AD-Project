@@ -184,3 +184,54 @@ def test_limits_reject_contradictory_unknown_configuration():
     with pytest.raises(ValueError, match='unknown_speed_limit'):
         FeasibilityLimits(unknown_speed_limit=0.0)
     FeasibilityLimits(three_valued_unknown=True)          # the valid one
+
+
+# --- detection vs tracking submissions --------------------------------------
+
+
+def test_load_detections_normalises_a_tracking_submission(tmp_path):
+    """Both submission flavours must arrive downstream in one shape.
+
+    A nuScenes DETECTION submission has detection_name/detection_score and no
+    identity; a TRACKING submission has tracking_name/tracking_score/
+    tracking_id. The tracker was designed for the second and fed the first.
+    """
+    import json
+
+    from e2e_pipeline.live_adapter import load_detections
+    box = {'translation': [1.0, 2.0, 0.0], 'size': [1.8, 4.5, 1.6],
+           'rotation': [1.0, 0.0, 0.0, 0.0], 'velocity': [0.0, 0.0],
+           'tracking_name': 'car', 'tracking_score': 0.8, 'tracking_id': '3_17'}
+    p = tmp_path / 'track.json'
+    p.write_text(json.dumps({'meta': {}, 'results': {'tok': [box]}}))
+    got = load_detections(p)['tok'][0]
+    assert got['detection_name'] == 'car'
+    assert got['detection_score'] == pytest.approx(0.8)
+    assert got['tracking_id'] == '3_17', 'identity must survive normalisation'
+
+
+def test_real_track_ids_are_used_in_preference_to_association():
+    """Associating on top of a real tracker discards a measured AMOTA 0.627."""
+    from e2e_pipeline.live_adapter import LiveDetectionAdapter
+
+    def box(x, tid):
+        return {'translation': [x, 0.0, 0.0], 'size': [1.8, 4.5, 1.6],
+                'rotation': [1.0, 0.0, 0.0, 0.0], 'velocity': [0.0, 0.0],
+                'detection_name': 'car', 'detection_score': 0.9,
+                'tracking_id': tid}
+
+    # the same object jumps 20 m, which the 3 m association gate would reject --
+    # a real tracker says it is the same object and must win
+    det = {'t0': [box(5.0, 'a')], 't1': [box(25.0, 'a')]}
+    ad = LiveDetectionAdapter(None, det, score_thr=0.25)
+    a = [x.track_id for x in ad.agents_at('t0', np.zeros(2), 0.0)]
+    b = [x.track_id for x in ad.agents_at('t1', np.zeros(2), 0.0)]
+    assert a == b, 'real tracking_id was overridden by nearest-neighbour'
+    assert ad.used_real_ids is True
+
+
+def test_missing_source_file_names_the_export_command():
+    """A silent empty detection set would look like a perception failure."""
+    from e2e_pipeline.closed_loop import LivePerceptionWorldModel
+    assert 'sparse4d' in LivePerceptionWorldModel.SOURCES
+    assert 'bevformer' in LivePerceptionWorldModel.SOURCES

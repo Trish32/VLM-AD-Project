@@ -39,12 +39,29 @@ DATA = Path(__file__).resolve().parent / 'data'
 
 
 def load_detections(*paths) -> dict:
-    """Merge nuScenes-format submission files into {token: [box dicts]}."""
-    out = {}
+    """Merge nuScenes submission files into {token: [box dicts]}.
+
+    Accepts both submission flavours. A *detection* submission carries
+    `detection_name` / `detection_score` and no identity; a *tracking*
+    submission carries `tracking_name` / `tracking_score` / `tracking_id`.
+    Normalised to the detection field names here, with `tracking_id` preserved,
+    so downstream code has one shape to read and the presence of real identity
+    is the only difference.
+    """
+    out: dict = {}
     for p in paths:
         p = Path(p)
-        if p.exists():
-            out.update(json.loads(p.read_text())['results'])
+        if not p.exists():
+            continue
+        for token, boxes in json.loads(p.read_text())['results'].items():
+            norm = []
+            for b in boxes:
+                if 'detection_name' not in b and 'tracking_name' in b:
+                    b = dict(b)
+                    b['detection_name'] = b['tracking_name']
+                    b['detection_score'] = b.get('tracking_score', 1.0)
+                norm.append(b)
+            out[token] = norm
     return out
 
 
@@ -86,6 +103,9 @@ class LiveDetectionAdapter:
         self._token_ids: dict[str, list] = {}  # token -> [tid per kept box]
         self._next_tid = 1
         self.switches = 0
+        #: True once a frame supplied real `tracking_id`s, so a run can report
+        #: whether it used the detector's own identity or the NN stand-in.
+        self.used_real_ids = False
 
     def agents_at(self, token: str, ego_xy: np.ndarray, ego_yaw: float
                   ) -> list[Agent]:
@@ -134,6 +154,19 @@ class LiveDetectionAdapter:
         """
         if token in self._token_ids:
             return self._token_ids[token]
+
+        # REAL IDENTITY WINS, and nothing here should overrule it. Sparse4D v3
+        # propagates ids through its temporal instance bank, which is the
+        # assumption `TrackCovarianceTracker` was built on; the nearest-neighbour
+        # fallback below exists only because the BEVFormer detection submission
+        # has no identity to read. Associating on top of a real tracker would
+        # discard a measured AMOTA 0.627 and replace it with a 3 m gate.
+        if all(b.get('tracking_id') is not None for b, _w, _v, _p in kept) and kept:
+            ids = [abs(hash(b['tracking_id'])) % 1_000_000
+                   for b, _w, _v, _p in kept]
+            self._token_ids[token] = ids
+            self.used_real_ids = True
+            return ids
 
         if not self.associate:
             ids = [b.get('tracking_id') or abs(hash(

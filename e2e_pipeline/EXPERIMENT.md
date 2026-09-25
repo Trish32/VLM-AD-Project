@@ -1579,6 +1579,90 @@ under ground truth, and it still cannot recover once it falls behind.
 
 ---
 
+## 31. Real track ids, finally supplied — and they bought nothing
+
+The architecture names **Sparse4D v3** as the object branch because it propagates
+identity through its temporal instance bank, and `TrackCovarianceTracker` is
+built on that: it deliberately does no association of its own. The live arm has
+always replayed **BEVFormer-tiny** instead (NDS 0.2255, mAP 0.2334 on mini-val,
+against the official tiny's 0.252), because those were the only saved per-sample
+detections covering all ten scenes.
+
+A nuScenes *detection* submission carries no `tracking_id`. So the tracker's
+precondition was never met, the adapter synthesised ids, and §26 measured the
+consequence: 0.0% of ids survived a frame, and the Kalman filter never ran a
+second update on any agent.
+
+`eval_track.py --export` now writes Sparse4D's unfiltered per-sample output —
+`run_inference` already covered every scene and the split filter was discarding
+it, so this costs one file write and no new inference. Re-running reproduced
+AMOTA 0.627 / MOTA 0.631.
+
+### Identity is fixed
+
+| source | agents/frame | ids carried to next frame |
+|---|---|---|
+| GT annotations | 41.2 | **96.9%** |
+| BEVFormer-tiny, token hash (as shipped) | 37.1 | **0.1%** |
+| BEVFormer-tiny, NN association (§26 fix) | 37.1 | 64.4% |
+| **Sparse4D v3, real instance-bank ids** | **19.9** | **91.0%** |
+
+Real ids land within 6 points of the ground-truth ceiling, and 27 points above
+the nearest-neighbour stand-in. The stated problem is solved.
+
+### And it does not help
+
+Class-matched, because Sparse4D submits only the 7 tracking classes and drops
+boxes with no assigned track:
+
+| arm | mode | EGO | other | brakes | clearance | completion | agents |
+|---|---|---|---|---|---|---|---|
+| BEVFormer-tiny 10-class + NN | pinned | 0 | 0 | 70 | 1.73 m | 52.5% | 40.0 |
+| BEVFormer-tiny 10-class + NN | free | 0 | 20 | 94 | 1.83 m | 39.8% | 39.8 |
+| BEVFormer-tiny **7-class** + NN | pinned | 0 | 0 | 69 | 1.73 m | 52.5% | 33.8 |
+| **BEVFormer-tiny 7-class + NN** | free | **0** | **8** | 88 | **2.04 m** | 47.0% | 33.6 |
+| Sparse4D 7-class, **real ids** | pinned | 0 | 0 | **46** | **2.03 m** | 52.5% | 20.8 |
+| Sparse4D 7-class, **real ids** | free | **1** | 15 | 83 | 1.74 m | 47.8% | 20.7 |
+
+**Against the class-matched baseline, real identity is worse on free-running
+safety** — 15 other-fault against 8, plus the only ego-fault step in the table.
+Its pinned numbers do look best (46 brakes against 69, clearance 2.03 m), but it
+is seeing **20.7 agents against 33.6**: recall 0.709 and every untracked box
+discarded. So even the class-matched comparison is confounded by count.
+
+The dominant variable is **how many agents you see, not whether you can follow
+them**. That is worth stating plainly because the entire exercise was premised on
+the opposite, and the premise came from this document — §26 identified the
+association failure, correctly, and then assumed fixing it properly would pay.
+
+### The 7-class restriction is the actual finding, and it is suspicious
+
+Dropping `barrier`, `traffic_cone` and `construction_vehicle` from BEVFormer-tiny
+takes other-fault collisions **20 → 8** and completion 39.8% → 47.0%, at no cost
+anywhere in the table. Those three classes were *causing* collisions.
+
+The mechanism is the §19 chain with a named trigger: false positives on static
+roadside furniture inflate risk, the gate over-brakes, the ego falls behind the
+recording, and the recorded traffic drives into it. Removing the classes removes
+the false positives.
+
+**Not shipped as a default.** "Delete the obstacle classes and the safety metric
+improves" is the shape of a measurement artefact, not an improvement — barriers
+and cones are real obstacles, and a stack that drives better without seeing them
+is telling you something about the risk model rather than about the classes. The
+right follow-up is to measure the per-class false-positive rate inside 10 m
+(§26's range table did this in aggregate: 3% true FP inside 10 m against 40%
+beyond 40 m) and fix the precision, not the taxonomy.
+
+### What the export is still worth
+
+It closes a stated architectural assumption that had been false for the whole
+project, and it converts "we cannot test this" into a measured null. Both live
+sources are kept and selectable — `LivePerceptionWorldModel(source='bevformer'
+| 'sparse4d')` — with `bevformer` remaining the default.
+
+---
+
 ## Retractions
 
 Twelve causal explanations were committed and then refuted by their own
