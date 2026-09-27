@@ -132,6 +132,12 @@ class FreeSpace:
     #: visualisation and diagnosis, where collapsing 18 classes to
     #: drivable/obstacle/unknown hides what the occupancy branch actually said.
     semantics: np.ndarray | None = None
+    #: (nx, ny, nz) int8 the BEV map above was flattened from. Same reasoning:
+    #: visualisation only. A BEV raster cannot show that the occupancy branch is
+    #: volumetric -- overhanging vegetation, a truck's cab against its trailer,
+    #: the fact that "obstacle" is a column decision -- so the renderer needs
+    #: the volume the flattening threw away.
+    volume: np.ndarray | None = None
 
     @property
     def free_fraction(self) -> float:
@@ -292,6 +298,7 @@ class FreeSpaceExtractor:
             origin=(self.grid.x[0], self.grid.y[0]),
             res=float(self.grid.x[2]),
             semantics=self.bev_semantics(sem),
+            volume=sem.astype(np.int8),
         )
 
     @staticmethod

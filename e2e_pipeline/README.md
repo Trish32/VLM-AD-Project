@@ -7,10 +7,18 @@ assumed, and a safety gate that can veto the learned plan.
 ![closed-loop rollout](assets/closed_loop_scene-0916.gif)
 
 *scene-0916, 24 closed-loop steps. **Left:** front camera with 3-D agent boxes and
-the chosen plan on the road surface. **Right:** FlashOcc's full 18-class Occ3D
-output — not the drivable/obstacle reduction the planner consumes — with all six
-DiffusionDrive candidates coloured by the filter's verdict. **Below:** the five
-metric families, live.*
+the chosen plan on the road surface. **Right:** FlashOcc's occupancy as the
+**volume it actually predicts** — all 18 Occ3D classes, forward-up and in the
+same handedness as the camera beside it, ego in blue and the chosen plan in
+amber. **Below:** the five metric families, live.*
+
+The occupancy panel deliberately shows the volume rather than the
+drivable/obstacle raster the planner consumes. A BEV cell is one colour whether
+it holds a kerb or a lorry, and "obstacle" is a decision taken over a whole
+column at body height — so the flattened view cannot show a mis-segmentation,
+and cannot show that only one of six ground-ish classes survives into
+`traversable`. The candidate fan is not drawn here: overlaying a top-down fan on
+a perspective render would put two incompatible projections in one panel.
 
 This scene is 16 of 24 steps a right turn, and the pipeline used to plan it as
 `straight` because the drive command was hardcoded. Fixing that is the single

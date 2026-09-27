@@ -72,6 +72,12 @@ H = HEAD_H + CAM_H + STATUS_H + TILE_H
 
 RANGE_M = 40.0                   # half-extent of the occupancy view, metres
 
+#: Render the occupancy panel as a perspective 3-D voxel view instead of a flat
+#: BEV class map. The flat map is the projection the PLANNER consumes; the
+#: volume is what the occupancy branch actually produced, and the difference is
+#: exactly the height structure a BEV cell cannot express.
+VOXEL_VIEW = True
+
 # Occ3D-nuScenes palette, byte-identical to FlashOcc's own `vis_occ.py` and to
 # Occupancy/FlashOcc/tools/visualize_occ.py::PALETTE. Copied rather than
 # imported because that module pulls in matplotlib, which this one does not need
@@ -117,6 +123,161 @@ def _to_px(xy: np.ndarray) -> np.ndarray:
     xy = np.atleast_2d(np.asarray(xy, dtype=np.float64))
     s = BEV / (2 * RANGE_M)
     return np.stack([BEV / 2 - xy[:, 1] * s, BEV / 2 - xy[:, 0] * s], axis=1)
+
+
+# Cube-face templates: (axis, dir, 4 corner offsets, shade). Top face brightest,
+# bottom darkest, sides between -- the shading is what makes the result read as
+# solid lit cubes rather than a flat point cloud. Ported from
+# Occupancy/FlashOcc/tools/visualize_occ.py rather than re-derived, so the two
+# renderers cannot drift.
+_FACES = [
+    (2, 1, [(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)], 1.00),    # +z top
+    (2, -1, [(0, 0, 0), (0, 1, 0), (1, 1, 0), (1, 0, 0)], 0.55),   # -z bottom
+    (0, 1, [(1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1)], 0.85),    # +x
+    (0, -1, [(0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0)], 0.85),   # -x
+    (1, 1, [(0, 1, 0), (0, 1, 1), (1, 1, 1), (1, 1, 0)], 0.70),    # +y
+    (1, -1, [(0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)], 0.70),   # -y
+]
+
+
+def _downsample2(occ):
+    """(200,200,16) -> (100,100,16), keeping a non-free class per 2x2 xy block.
+
+    Thin objects survive the coarsening: a pedestrian occupying one cell of a
+    2x2 block would vanish under a majority vote and does not here. The
+    downsample is a rendering cost control -- 640k voxels is ~200k exposed
+    quads, which matplotlib will not draw at interactive speed.
+    """
+    o = (occ.reshape(100, 2, 100, 2, 16).transpose(0, 2, 4, 1, 3)
+         .reshape(100, 100, 16, 4))
+    nonfree = o != FREE_ID
+    has = nonfree.any(-1)
+    chosen = np.take_along_axis(o, nonfree.argmax(-1)[..., None], -1)[..., 0]
+    chosen[~has] = FREE_ID
+    return chosen
+
+
+def _voxel_faces(occ):
+    """Exposed cube faces -> (quads (M,4,3), facecolors (M,3)).
+
+    Only faces between an occupied voxel and a free neighbour are emitted -- the
+    visible shell. Out-of-grid neighbours count as occupied so the grid-boundary
+    walls are never drawn, which would otherwise box the scene in on all four
+    sides.
+    """
+    F = occ != FREE_ID
+    lut = np.array(OCC_PALETTE, dtype=np.float64)
+    quads, cols = [], []
+    for axis, d, corners, shade in _FACES:
+        nbr = np.ones_like(F)
+        dst = [slice(None)] * 3
+        src = [slice(None)] * 3
+        n = F.shape[axis]
+        if d > 0:
+            dst[axis], src[axis] = slice(0, n - 1), slice(1, n)
+        else:
+            dst[axis], src[axis] = slice(1, n), slice(0, n - 1)
+        nbr[tuple(dst)] = F[tuple(src)]
+        exp = F & ~nbr
+        xs, ys, zs = np.nonzero(exp)
+        if not len(xs):
+            continue
+        base = np.stack([xs, ys, zs], 1)[:, None, :]
+        quads.append(base + np.array(corners)[None])
+        cols.append(lut[occ[xs, ys, zs]] / 255.0 * shade)
+    if not quads:
+        return np.zeros((0, 4, 3)), np.zeros((0, 3))
+    return np.concatenate(quads), np.concatenate(cols)
+
+
+def _render_voxels(fs, result, size=BEV) -> Image.Image | None:
+    """Perspective 3-D voxel view of the occupancy volume, ego-centric.
+
+    WHY NOT THE FLAT RASTER. A top-down class map is the projection the planner
+    consumes, and drawing only that hides that the branch is volumetric: a BEV
+    cell is one colour whether it holds a kerb or a lorry, and "obstacle" is a
+    decision taken over a whole column at body height. The volume shows the
+    height structure the flattening discards.
+
+    Ego-centric and looking forward, so the world streams toward the viewer as
+    the car drives and motion reads as flow across the clip.
+    """
+    vol = getattr(fs, 'volume', None)
+    if vol is None:
+        return None
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+    occ = _downsample2(np.asarray(vol))
+    quads, cols = _voxel_faces(occ)
+
+    dpi = 100
+    fig = plt.figure(figsize=(size / dpi, size / dpi), dpi=dpi)
+    fig.patch.set_facecolor('#0b1414')
+    ax = fig.add_axes([0, 0, 1, 1], projection='3d')
+    ax.set_facecolor('#0b1414')
+    if len(quads):
+        ax.add_collection3d(Poly3DCollection(
+            quads, facecolors=cols, edgecolors=(0, 0, 0, 0.10), linewidths=0.08))
+
+    # The planned trajectory, drawn in the same voxel coordinates so it sits on
+    # the ground plane of the volume rather than being pasted on afterwards.
+    # ego frame (+x fwd, +y left) metres -> voxel index: the grid spans
+    # x,y in [-40, 40] at 0.4 m, downsampled 2x -> 0.8 m per cell, centre at 50.
+    def to_vox(xy):
+        a = np.atleast_2d(np.asarray(xy, float))
+        return np.stack([a[:, 0] / 0.8 + 50.0, a[:, 1] / 0.8 + 50.0], 1)
+
+    # Ego marker at the grid centre, so the plan has an origin the eye can find.
+    ax.scatter([50.0], [50.0], [3.2], s=90, c='#3a6ad2', marker='s',
+               edgecolors='#eaeaea', linewidths=0.8, depthshade=False, zorder=12)
+
+    # Ground sits at voxel z = (0 - (-1.0)) / 0.4 = 2.5; draw just above it so
+    # the ribbon rests on the road rather than intersecting it.
+    if result is not None and not result.emergency and len(result.trajectory):
+        p = to_vox(np.vstack([[0.0, 0.0], result.trajectory]))
+        z = np.full(len(p), 3.0)
+        ax.plot(p[:, 0], p[:, 1], z, color='#101a1a', linewidth=6.0, zorder=9)
+        ax.plot(p[:, 0], p[:, 1], z, color='#ffc83c', linewidth=3.2, zorder=10)
+        ax.scatter(p[1:, 0], p[1:, 1], z[1:], s=14, c='#ffc83c',
+                   depthshade=False, zorder=11)
+
+    try:
+        ax.set_proj_type('persp', focal_length=0.62)
+    except TypeError:
+        ax.set_proj_type('persp')
+    # FORWARD-UP, AND AGREEING WITH THE CAMERA PANEL BESIDE IT.
+    #
+    # azim=180 puts the camera on the -x side looking along +x, so ego-forward
+    # recedes into the screen and reads as "up" in the image. The screen-right
+    # axis is then view x up = -y, which places the ego's LEFT on the image's
+    # left -- the same handedness as the front camera in the next panel. A
+    # three-quarter azimuth looked better in isolation and silently disagreed
+    # with the photo next to it, which is worse than looking plainer: a viewer
+    # comparing the two panels would have been reading mirrored geometry.
+    #
+    # elev=38 rather than FlashOcc's eye-level 14. At eye level a 40 m grid is
+    # mostly the nearest building wall; tilted down, the road layout and the gap
+    # the plan threads are legible while forward still runs up the panel.
+    ax.view_init(elev=38, azim=180)
+    # Forward half only, and laterally about +-21 m, which approximates the
+    # front camera's coverage so the two panels frame the same scene.
+    # z clipped at 9 (~2.6 m above the road): taller `manmade` voxels are
+    # building upper storeys, which fill the frame and say nothing about
+    # driveability.
+    ax.set_box_aspect((52, 52, 11))
+    ax.set_xlim(44, 96)
+    ax.set_ylim(24, 76)
+    ax.set_zlim(0, 9)
+    ax.set_axis_off()
+    ax.margins(0)
+
+    fig.canvas.draw()
+    buf = np.asarray(fig.canvas.buffer_rgba())[..., :3]
+    plt.close(fig)
+    return Image.fromarray(buf).resize((size, size), Image.LANCZOS)
 
 
 def _semantic_layer(fs) -> Image.Image | None:
@@ -223,6 +384,21 @@ def _poly(draw, pts_m, colour, width=2, closed=True, casing=True):
 
 
 def _render_bev(scene, result) -> Image.Image:
+    voxels = _render_voxels(scene.freespace, result) if VOXEL_VIEW else None
+    if voxels is not None:
+        # The 3-D view already contains the plan; agent boxes, range rings and
+        # the candidate fan are BEV constructs and are deliberately not drawn
+        # over it -- overlaying a top-down fan on a perspective render puts two
+        # incompatible projections in one panel.
+        d = ImageDraw.Draw(voxels)
+        d.text((10, 8), 'FLASHOCC 3-D OCCUPANCY  +  PLAN',
+               font=_font(12, bold=True), fill=TEXT)
+        _draw_occ_legend(d, scene.freespace, _font(11))
+        d.text((10, BEV - 16),
+               'blue: ego   amber: plan   forward-up, matches CAM_FRONT',
+               font=_font(11), fill=(110, 134, 134))
+        return voxels
+
     img = Image.new('RGB', (BEV, BEV), PANEL_BG)
     layer = _semantic_layer(scene.freespace)
     if layer is not None:
